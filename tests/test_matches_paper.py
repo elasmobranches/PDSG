@@ -219,28 +219,28 @@ def _assert_dataloader_settings_match(built, ref):
 @pytest.mark.parametrize('backbone', BACKBONES)
 def test_bl_matches_paper(backbone):
     built = build_config(method='bl', backbone=backbone,
-                         recipe='paper_v13', seed=37)
+                         recipe='paper', seed=37)
     _assert_matches_paper(built, _fixture(f'bl_{backbone}'))
 
 
 @pytest.mark.parametrize('backbone', BACKBONES)
 def test_ef_matches_paper(backbone):
     built = build_config(method='ef', backbone=backbone,
-                         recipe='paper_v13', seed=37)
+                         recipe='paper', seed=37)
     _assert_matches_paper(built, _fixture(f'ef_{backbone}'))
 
 
 @pytest.mark.parametrize('backbone', BACKBONES)
 def test_sd_matches_paper(backbone):
     built = build_config(method='sd', backbone=backbone,
-                         recipe='paper_v13', seed=37)
+                         recipe='paper', seed=37)
     _assert_matches_paper(built, _fixture(f'sd_{backbone}'))
 
 
 @pytest.mark.parametrize('backbone', BACKBONES)
 def test_hd_matches_paper(backbone):
     built = build_config(method='hd', backbone=backbone,
-                         recipe='paper_v13', seed=37)
+                         recipe='paper', seed=37)
     _assert_matches_paper(built, _fixture(f'hd_{backbone}'))
 
 
@@ -257,7 +257,7 @@ def test_hd_matches_paper(backbone):
 @pytest.mark.parametrize('backbone', BACKBONES)
 def test_hd_nogate_matches_paper(backbone):
     built = build_config(method='hd', backbone=backbone, ablation='nogate',
-                         recipe='paper_v13', seed=37)
+                         recipe='paper', seed=37)
     _assert_matches_paper(built, _fixture(f'hd-nogate_{backbone}'))
     assert built.model['backbone']['fusion_use_gate'] is False
 
@@ -265,7 +265,7 @@ def test_hd_nogate_matches_paper(backbone):
 @pytest.mark.parametrize('backbone', BACKBONES)
 def test_hd_bigate_matches_paper(backbone):
     built = build_config(method='hd', backbone=backbone, ablation='bigate',
-                         recipe='paper_v13', seed=37)
+                         recipe='paper', seed=37)
     _assert_matches_paper(built, _fixture(f'hd-bigate_{backbone}'))
 
 
@@ -279,7 +279,7 @@ def test_hd_rgb_matches_paper(backbone):
     three-element mean/std. Depth is never loaded, not loaded and discarded.
     """
     built = build_config(method='hd', backbone=backbone, ablation='rgb',
-                         recipe='paper_v13', seed=37)
+                         recipe='paper', seed=37)
     ref = _fixture(f'hd-rgb_{backbone}')
     _assert_matches_paper(built, ref)
 
@@ -316,7 +316,7 @@ def _assert_shuffled_matches_paper(method, backbone):
     here with a reason instead of just failing a dict comparison.
     """
     built = build_config(method=method, backbone=backbone, ablation='shuffled',
-                         recipe='paper_v13', seed=37)
+                         recipe='paper', seed=37)
     ref = _fixture(f'{method}-shuffled_{backbone}')
     _assert_matches_paper(built, ref)
 
@@ -443,7 +443,7 @@ def test_hd_mit_b0_explicit_betas_are_the_adamw_defaults():
 
 def test_unknown_backbone_raises_clear_error():
     with pytest.raises(ValueError, match='unknown backbone'):
-        build_config(method='bl', backbone='nonexistent', recipe='paper_v13')
+        build_config(method='bl', backbone='nonexistent', recipe='paper')
 
 
 def test_timm_default_tag_for_convnext_atto_is_pinned_by_assumption():

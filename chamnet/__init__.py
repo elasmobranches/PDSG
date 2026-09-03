@@ -24,6 +24,11 @@ def register_all() -> None:
     # why it's a distinct name rather than an override of vanilla mmseg's
     # SegDataPreProcessor, which is buggy for >3-channel sd/hd/ef input).
     from chamnet.models import data_preprocessor                # noqa: F401
+    # Registers IoUMetricWithPerClass. Purely additive to mmseg's IoUMetric
+    # (see that module) — the built configs still name plain 'IoUMetric', and
+    # only the sweep and the replay, which have to write the campaign's
+    # per-class CSV columns, swap the type in at run time.
+    from chamnet import metrics                                 # noqa: F401
     _REGISTERED = True
 
 

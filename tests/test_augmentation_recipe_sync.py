@@ -1,4 +1,4 @@
-"""recipes/paper_v13.yaml's augmentation: block is documentation, not wiring —
+"""recipes/paper.yaml's augmentation: block is documentation, not wiring —
 _pipelines() never reads r.augmentation; ChamNetOnlineAugmentation's own
 constructor defaults are what actually run. This test keeps the YAML honest:
 if a default in augmentation.py ever changes, this fails instead of leaving
@@ -9,7 +9,7 @@ from chamnet.datasets.transforms.augmentation import ChamNetOnlineAugmentation
 
 
 def test_recipe_augmentation_values_match_transform_defaults():
-    r = load_recipe('paper_v13')
+    r = load_recipe('paper')
     aug = ChamNetOnlineAugmentation()
 
     hflip = aug.geometry.transforms[0]

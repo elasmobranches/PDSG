@@ -10,9 +10,12 @@ rand_init=True, 그리고 bl/resnet18 Pillar 가 소수점 2자리 반올림 경
 
 `--all` 은 WORK 의 9개 arm × 4 백본 = 36행 전부를 재생한다. 인자 없이 돌리면
 ablation 없는 4개 method 만 (16행) 돈다.
+
+체크포인트는 seed 37 에서 **학습**된 것을 읽지만, 비교는 기록된 평가가 실제로
+돌았던 seed 로 한다 (RECORDED_EVAL_SEED). 두 값이 다른 이유는 그 상수의
+주석에 있다 — 원본 sweep 이 평가 프로세스에 seed 를 넘기지 않았다.
 """
 import argparse
-import contextlib
 import csv
 import datetime
 import glob
@@ -22,65 +25,21 @@ import mmseg
 import pandas as pd
 import torch
 from mmengine.runner import Runner
-from mmseg.evaluation import IoUMetric
-from mmseg.registry import METRICS
 
 import chamnet
+from chamnet.checkpoint import mmengine_checkpoint_loading
 from chamnet.config.builder import build_config
+from chamnet.config.combos import FLOW, VALID
 
 
-@contextlib.contextmanager
-def _load_with_full_pickle():
-    """Scope torch>=2.6's weights_only=False fallback to one checkpoint load.
-
-    These checkpoints carry a pickled mmengine `HistoryBuffer` (optimizer/
-    logging state) that torch>=2.6's default `weights_only=True` safe
-    unpickler doesn't cover, so loading them needs the old full-pickle
-    behaviour. Forcing that *process-wide from import time* (as an earlier
-    version of this script did) is an ACE footgun on any other .pth path
-    that runs through torch.load in this process afterwards — an
-    attacker-controlled checkpoint would silently get full unpickling
-    instead of the restricted loader torch>=2.6 defaults to. Monkeypatching
-    torch.load only for the duration of the one call that needs it, then
-    restoring it, keeps that exposure to exactly this block.
-    """
-    orig = torch.load
-    torch.load = lambda *a, **k: orig(*a, **{**k, 'weights_only': False})
-    try:
-        yield
-    finally:
-        torch.load = orig
-
-
-@METRICS.register_module()
-class IoUMetricWithPerClass(IoUMetric):
-    """IoUMetric that also puts each class's IoU into the returned dict.
-
-    Vanilla IoUMetric.compute_metrics only returns the aggregate keys
-    (aAcc, mIoU, mAcc, mDice, mFscore, ...) — per-class numbers are printed
-    to the log table but never handed back to the caller. The replay needs
-    `IoU.pillar` specifically to compare against results_v8.csv's recorded
-    per-class column, so recompute the same per-class breakdown IoUMetric
-    already does internally (`total_area_to_metrics`) and add it to the dict
-    this method returns.
-    """
-
-    def compute_metrics(self, results):
-        metrics = super().compute_metrics(results)
-        areas = tuple(zip(*results))
-        per_class = self.total_area_to_metrics(
-            sum(areas[0]), sum(areas[1]), sum(areas[2]), sum(areas[3]),
-            self.metrics, self.nan_to_num, self.beta)
-        per_class.pop('aAcc', None)
-        class_names = self.dataset_meta['classes']
-        for key, values in per_class.items():
-            for name, v in zip(class_names, values):
-                metrics[f'{key}.{name}'] = round(float(v) * 100, 2)
-        return metrics
-
-
-# (method, ablation) -> (flow, work_dir for resnet18/mit_b0,
-#                                work_dir for segnext_t/convnext_atto)
+# (method, ablation) -> (work_dir for resnet18/mit_b0,
+#                        work_dir for segnext_t/convnext_atto)
+#
+# The arm's *name* is not repeated here: it comes from
+# chamnet.config.combos.FLOW, the same table the sweep names its work_dirs and
+# CSV rows from. Written out twice, a rename would land in one and miss the
+# other, and the replay would then look for checkpoints under a directory the
+# sweep never wrote.
 #
 # Every arm was swept twice: first on resnet18 + mit_b0, then -- as a separate,
 # later sweep -- on segnext_t + convnext_atto, into a differently named
@@ -93,32 +52,23 @@ class IoUMetricWithPerClass(IoUMetric):
 # with a plain FileNotFoundError that reads like missing data rather than a
 # wrong path. Verified against the directory listing on the training server.
 WORK = {
-    ('bl', None):       ('baseline',
-                         'work_dirs_v12+_512bc_pretrained',
+    ('bl', None):       ('work_dirs_v12+_512bc_pretrained',
                          'work_dirs_v12+_512bc_pretrained'),
-    ('ef', None):       ('proposed',
-                         'work_dirs_v12+_512bc_pretrained',
+    ('ef', None):       ('work_dirs_v12+_512bc_pretrained',
                          'work_dirs_v12+_512bc_pretrained'),
-    ('sd', None):       ('dual',
-                         'work_dirs_v12+_512bc_pretrained',
+    ('sd', None):       ('work_dirs_v12+_512bc_pretrained',
                          'work_dirs_v12+_512bc_pretrained'),
-    ('hd', None):       ('dual_plus',
-                         'work_dirs_v12+_512bc_pretrained',
+    ('hd', None):       ('work_dirs_v12+_512bc_pretrained',
                          'work_dirs_v12+_512bc_pretrained'),
-    ('hd', 'nogate'):   ('dual_plus_nogate',
-                         'work_dirs_v12+_512_gate_ablation',
+    ('hd', 'nogate'):   ('work_dirs_v12+_512_gate_ablation',
                          'work_dirs_v12+_512_gate_ablation_ext'),
-    ('hd', 'bigate'):   ('dual_plus_bigate',
-                         'work_dirs_v12+_512_gate_ablation',
+    ('hd', 'bigate'):   ('work_dirs_v12+_512_gate_ablation',
                          'work_dirs_v12+_512_gate_ablation_ext'),
-    ('hd', 'shuffled'): ('dual_plus_shuffled',
-                         'work_dirs_v12+_512_controls',
+    ('hd', 'shuffled'): ('work_dirs_v12+_512_controls',
                          'work_dirs_v12+_512_controls_ext'),
-    ('hd', 'rgb'):      ('dual_plus_rgb',
-                         'work_dirs_v12+_512_controls',
+    ('hd', 'rgb'):      ('work_dirs_v12+_512_controls',
                          'work_dirs_v12+_512_controls_rgb_ext'),
-    ('ef', 'shuffled'): ('proposed_shuffled',
-                         'work_dirs_v12+_512_ef_controls',
+    ('ef', 'shuffled'): ('work_dirs_v12+_512_ef_controls',
                          'work_dirs_v12+_512_controls_ext'),
 }
 # `--methods` names the training methods to replay without ablations, which is
@@ -127,6 +77,49 @@ WORK = {
 IMPLEMENTED_METHODS = ('bl', 'ef', 'sd', 'hd')
 EXT_BACKBONES = ('segnext_t', 'convnext_atto')      # 확장 sweep 백본
 BACKBONES = ('resnet18', 'mit_b0', 'segnext_t', 'convnext_atto')
+
+# The seed the replayed checkpoints were *trained* at. It selects which run
+# directory to read a checkpoint from and which results_v8.csv row to compare
+# against; it is not the seed the comparison runs at. See below.
+RUN_SEED = 37
+
+# The seed the recorded evaluations actually ran at -- 42 for every row of
+# results_v8.csv, whatever seed the run was trained at.
+#
+# Not a typo, and not the run's seed. The campaign's sweep script
+# (`run_paper_sweep.sh`) trained with `--cfg-options randomness.seed="$run"`,
+# then scored the resulting checkpoint in two further `tools/test.py`
+# processes -- one on test, one on val -- and passed neither of those the
+# seed. Both therefore fell back to the value in the config chain's base
+# runtime file, `randomness = dict(seed=42, ...)`. The campaign's own console
+# logs show exactly that: in every run directory `train_console.log` reports
+# the run's seed (37, 39, ...) while `test_console.log` and `val_console.log`
+# both report 42.
+#
+# It matters for the two arms whose *evaluation* consumes randomness --
+# SegNeXt-T's LightHamHead (`rand_init=True` draws `torch.rand` on every
+# forward pass) and the shuffled controls (a fresh depth permutation per
+# sample). Replaying those at the training seed puts them on a different RNG
+# trajectory from the recorded numbers, and no amount of re-running closes
+# the gap. Measured, same checkpoints and worker count, one fresh process per
+# row, changing only this seed:
+#
+#     row                      eval at 37   eval at 42   recorded
+#     hd/shuffled/resnet18     80.96        80.97        80.97
+#     hd/shuffled/mit_b0       76.69        76.71        76.71
+#     bl/segnext_t             80.76        80.81        80.80
+#
+# Every other arm is unaffected: nothing else in the release consumes RNG at
+# test time, which is why replaying them at either seed gave the same answer.
+#
+# A consequence worth stating for anyone reading numbers out of
+# results_v8.csv: because every recorded evaluation ran at one fixed seed,
+# the ten training seeds differ purely in training, and evaluation-time
+# randomness was held constant across all conditions and seeds. That makes
+# the between-condition comparisons cleaner. It also means a shuffled arm's
+# number is conditional on one permutation realisation rather than averaged
+# over permutations.
+RECORDED_EVAL_SEED = 42
 
 
 def _use_original_val_test_layout(dataloader_cfg):
@@ -161,8 +154,16 @@ def _use_original_val_test_layout(dataloader_cfg):
     dataloader_cfg['dataset']['seg_map_suffix'] = '_mask_gray.png'
 
 
-def replay(data_root, src, method, backbone, ablation, seed=37):
-    flow, wd, wd_ext = WORK[(method, ablation)]
+def replay(data_root, src, method, backbone, ablation, seed=RUN_SEED,
+           eval_seed=RECORDED_EVAL_SEED):
+    """Replay one recorded run and compare against what it recorded.
+
+    `seed` picks the run -- its directory and its results_v8.csv row.
+    `eval_seed` is what the comparison evaluates at, and the two are
+    deliberately different numbers: see RECORDED_EVAL_SEED.
+    """
+    flow = FLOW[(method, ablation)]
+    wd, wd_ext = WORK[(method, ablation)]
     wd = wd_ext if backbone in EXT_BACKBONES else wd
     run = f'{src}/{wd}/{seed}/chamnet_{flow}_{backbone}'
     matches = glob.glob(f'{run}/best_mIoU_iter_*.pth')
@@ -180,35 +181,56 @@ def replay(data_root, src, method, backbone, ablation, seed=37):
             f'{len(matches)}: {matches}')
     ckpt = matches[0]
 
+    # seed=eval_seed, not seed: build_config puts this into
+    # `randomness.seed`, and what has to be reproduced here is the RNG state
+    # the recorded *evaluation* ran at, not the one its training ran at.
     cfg = build_config(method=method, backbone=backbone, ablation=ablation,
-                       recipe='paper_v13', data_root=data_root, seed=seed)
+                       recipe='paper', data_root=data_root, seed=eval_seed)
     cfg.load_from = ckpt
     cfg.work_dir = f'/tmp/replay/{flow}_{backbone}'
     _use_original_val_test_layout(cfg.val_dataloader)
     _use_original_val_test_layout(cfg.test_dataloader)
-    # Swap in the per-class-emitting metric (see IoUMetricWithPerClass above)
-    # so `metrics['IoU.pillar']` below is populated; iou_metrics stays as the
-    # builder set it, only the registered type changes.
+    # Swap in the per-class-emitting metric (chamnet.metrics, registered by
+    # chamnet.register_all()) so `metrics['IoU.pillar']` below is populated;
+    # iou_metrics stays as the builder set it, only the registered type
+    # changes. The sweep does the same, for the same reason.
     cfg.test_evaluator['type'] = 'IoUMetricWithPerClass'
-    with _load_with_full_pickle():
+    # These checkpoints carry pickled mmengine logging state that torch
+    # >= 2.6's default safe unpickler refuses -- see chamnet.checkpoint,
+    # which is also what the sweep uses to read the ones it writes.
+    with mmengine_checkpoint_loading():
         metrics = Runner.from_cfg(cfg).test()
 
     rec = pd.read_csv(f'{src}/{wd}/results_v8.csv')
     row = rec[(rec.flow == flow) & (rec.backbone == backbone) & (rec.seed == seed)].iloc[0]
+    # float() before round(): IoUMetric returns numpy scalars, and leaving
+    # them numpy makes this dict silently un-JSON-able for anything that wants
+    # to serialise it. The CSV writer str()s them either way.
     return dict(method=method, backbone=backbone, ablation=ablation or '-',
-                replay_mIoU=round(metrics['mIoU'], 4),
+                replay_mIoU=round(float(metrics['mIoU']), 4),
                 recorded_mIoU=round(float(row.test_mIoU), 4),
-                replay_pillar=round(metrics['IoU.pillar'], 4),
+                replay_pillar=round(float(metrics['IoU.pillar']), 4),
                 recorded_pillar=round(float(row.test_IoU_pillar), 4))
 
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--data', default='/data/real_dataset_v12_plus')
-    ap.add_argument('--src', default='/data')
+    ap.add_argument('--src', default='/data',
+                    help='root holding the recorded runs\' work_dirs and '
+                         'their results_v8.csv. The checkpoints found under '
+                         'it are loaded with the pickle enabled (see '
+                         'chamnet.checkpoint), so point it only at '
+                         'checkpoints you trust.')
     ap.add_argument('--methods', default=','.join(IMPLEMENTED_METHODS))
     ap.add_argument('--all', action='store_true')
     ap.add_argument('--out', default='verification/replay.csv')
+    ap.add_argument('--eval-seed', type=int, default=RECORDED_EVAL_SEED,
+                    help='randomness.seed to evaluate at. The default is the '
+                         'seed the recorded evaluations ran at, which is not '
+                         'the seed the checkpoints were trained at -- see '
+                         'RECORDED_EVAL_SEED in this file. Override it to '
+                         'reproduce the measurement that established that.')
     ap.add_argument('--commit', default='unknown',
                     help="short git commit hash this replay ran against. The "
                          "GPU container this script runs in doesn't have a "
@@ -223,7 +245,6 @@ if __name__ == '__main__':
     # ever disagree, --all silently stops covering an arm the package still
     # advertises (or asks for a checkpoint that was never trained). Neither
     # failure announces itself, so check rather than assume.
-    from chamnet.config.combos import VALID
     if set(WORK) != VALID:
         raise SystemExit(
             f'WORK and chamnet.config.combos.VALID disagree: '
@@ -231,7 +252,7 @@ if __name__ == '__main__':
             f'only in VALID {sorted(VALID - set(WORK), key=str)}')
 
     combos = list(WORK) if a.all else [(m, None) for m in a.methods.split(',')]
-    rows = [replay(a.data, a.src, m, bb, ab)
+    rows = [replay(a.data, a.src, m, bb, ab, eval_seed=a.eval_seed)
             for m, ab in combos
             for bb in BACKBONES]
     out_dir = os.path.dirname(a.out)
@@ -240,33 +261,38 @@ if __name__ == '__main__':
     gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu'
     provenance = (f'# commit={a.commit} '
                  f'date={datetime.datetime.now(datetime.timezone.utc).isoformat()} '
+                 f'run_seed={RUN_SEED} eval_seed={a.eval_seed} '
                  f'gpu={gpu!r} torch={torch.__version__} mmseg={mmseg.__version__}')
     with open(a.out, 'w', newline='') as f:
         f.write(provenance + '\n')
         w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
 
     # Gate on Pillar as well as mIoU: it's the paper's headline metric, and
-    # it moves further than mIoU on the same rows -- e.g. bl/segnext_t was
-    # 0.04 off on mIoU but 0.20 off on Pillar. Gating on mIoU alone would
-    # have let that pass unnoticed.
+    # it moves further than mIoU on the same rows -- e.g. hd/nogate/segnext_t
+    # is 0.01 off on mIoU and 0.44 off on Pillar. Gating on mIoU alone would
+    # let that pass unnoticed.
     #
     # The gate stays at 1e-3 (i.e. "equal at the 2 decimals results_v8.csv
-    # stores") deliberately. Three row classes are expected to fail it and are
+    # stores") deliberately. Two row classes are expected to fail it and are
     # documented in verification/README.md rather than tolerated here:
     #
-    #   * SegNeXt-T's RNG-dependent decode head -- one row per arm, 9 of the 36
-    #     under --all.
-    #   * the shuffled arms, which draw their depth permutation at test time --
-    #     8 rows, of which 2 are SegNeXt-T rows already counted, so 6 more.
+    #   * SegNeXt-T rows. Its decode head draws `torch.rand` on every forward
+    #     pass, and evaluating at the recorded evaluation seed narrowed these
+    #     but did not close them: 8 of the 9 still differ, by 0.00-0.07 mIoU
+    #     and 0.00-0.44 Pillar. Why is an open question; see the README.
     #   * bl/resnet18's Pillar, whose raw value straddles the 79.995 rounding
     #     boundary so the second decimal flips between runs while the quantity
     #     itself moves by ~6 pixels in 1.46M.
     #
-    # That is 15 rows that do not match plus one coin flip, so the printed pass
-    # count under --all is 20/36 or 21/36, less one for each row the ~0.01 GPU
-    # flutter happens to land on (it took two in the committed run, hence
-    # 19/36). Widening the gate to absorb any of this would also stop it
-    # catching a real regression of the same size.
+    # The shuffled arms used to be a third class and are not any more: all six
+    # non-SegNeXt shuffled rows now match exactly on both metrics. What was
+    # missing was the evaluation seed (see RECORDED_EVAL_SEED), not anything
+    # about the arms.
+    #
+    # So the printed pass count under --all is 28/36, plus or minus the rows
+    # the ~0.01 GPU flutter happens to land on and one for the boundary row.
+    # Widening the gate to absorb any of this would also stop it catching a
+    # real regression of the same size.
     bad = [r for r in rows
            if abs(r['replay_mIoU'] - r['recorded_mIoU']) > 1e-3
            or abs(r['replay_pillar'] - r['recorded_pillar']) > 1e-3]

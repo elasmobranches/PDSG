@@ -104,7 +104,7 @@ class Recipe:
 def _recipe_text(name_or_path: str | Path) -> str:
     """Resolve a recipe reference to its YAML text.
 
-    A bare name with no path separators and no file suffix (e.g. 'paper_v13')
+    A bare name with no path separators and no file suffix (e.g. 'paper')
     names a recipe shipped inside the chamnet package
     (chamnet/recipes/<name>.yaml) and is resolved via importlib.resources, so
     it keeps working after `pip install chamnet` regardless of the caller's

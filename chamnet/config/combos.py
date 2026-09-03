@@ -1,14 +1,40 @@
 """method × ablation 유효 조합. 이 표가 유일한 출처."""
 
-VALID: set[tuple[str, str | None]] = {
-    ('bl', None), ('ef', None), ('sd', None), ('hd', None),
-    # HD's four control arms, plus early fusion's depth-structure control.
-    # ('ef', 'shuffled') exists and ('sd', 'shuffled') does not because the
-    # paper ran the shuffled control on the two arms it argues about, not on
-    # all four.
-    ('ef', 'shuffled'),
-    ('hd', 'shuffled'), ('hd', 'rgb'), ('hd', 'nogate'), ('hd', 'bigate'),
+# Every valid combination, mapped to the name the original campaign gave it.
+#
+# That name -- the "flow" -- is not decoration. It is the `flow` column of the
+# recorded per-run CSV, and it is the directory name a run's work_dir is
+# built from (`<work_root>/<seed>/chamnet_<flow>_<backbone>/`). Anything that
+# has to line up with a recorded run therefore has to agree on it: the sweep
+# that writes new rows, and the replay that reads the old ones. Both take the
+# name from here, so a rename cannot land in one and miss the other.
+#
+# The vocabulary is the campaign's, not the package's: `bl` is written
+# `baseline`, `ef` is written `proposed` (the name early fusion had while the
+# experiments were being run), `sd` is `dual` and `hd` is `dual_plus`. It is
+# kept as recorded rather than modernised, because renaming it would orphan
+# every metrics row and work_dir the campaign produced.
+#
+# HD's four control arms, plus early fusion's depth-structure control.
+# ('ef', 'shuffled') exists and ('sd', 'shuffled') does not because the paper
+# ran the shuffled control on the two arms it argues about, not on all four.
+FLOW: dict[tuple[str, str | None], str] = {
+    ('bl', None):       'baseline',
+    ('ef', None):       'proposed',
+    ('sd', None):       'dual',
+    ('hd', None):       'dual_plus',
+    ('ef', 'shuffled'): 'proposed_shuffled',
+    ('hd', 'shuffled'): 'dual_plus_shuffled',
+    ('hd', 'rgb'):      'dual_plus_rgb',
+    ('hd', 'nogate'):   'dual_plus_nogate',
+    ('hd', 'bigate'):   'dual_plus_bigate',
 }
+
+# Derived, not restated: a combination is valid exactly when the campaign has
+# a name for it. Written the other way round these two tables could disagree,
+# and the disagreement would be silent -- a combination valid but unnameable
+# would crash only once something asked for its work_dir.
+VALID: set[tuple[str, str | None]] = set(FLOW)
 
 # Why each *invalid* combination is invalid, in the words a user sees. Every
 # (method, ablation) pair outside VALID that a user could plausibly type has an

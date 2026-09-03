@@ -10,11 +10,10 @@ from chamnet.config.backbones import (BACKBONES, EF_EXTRA_CHANNEL_INIT,
                                       EF_STEM_DELTA, EF_TYPE, HD_BIGATE_TYPE,
                                       HD_OPTIM_EXTRA, HD_RGB_TYPE,
                                       HD_STEM_DELTA, HD_TYPE, NORM, SD_TYPE)
-from chamnet.config.combos import validate
+from chamnet.config.combos import FLOW, validate
 from chamnet.config.schema import Recipe, load_recipe
 
 CLASSES = 8
-FLOW = {'bl': 'baseline', 'ef': 'proposed', 'sd': 'dual', 'hd': 'dual_plus'}
 RGB_MEAN, RGB_STD = [123.675, 116.28, 103.53], [58.395, 57.12, 57.375]
 
 
@@ -279,7 +278,7 @@ def _dataloader(r: Recipe, split_dir, pipeline, root, batch_size, num_workers,
 
 
 def build_config(method: str, backbone: str, ablation: str | None = None,
-                 recipe: str | Path | Recipe = 'paper_v13',
+                 recipe: str | Path | Recipe = 'paper',
                  data_root: str | None = None, seed: int = 31,
                  work_dir: str | None = None) -> Config:
     """(method, backbone, ablation) 을 실행 가능한 mmengine Config 로 만든다."""
@@ -406,6 +405,10 @@ def build_config(method: str, backbone: str, ablation: str | None = None,
                      mp_cfg=dict(mp_start_method='fork', opencv_num_threads=0),
                      dist_cfg=dict(backend='nccl')),
         log_processor=dict(by_epoch=False), log_level='INFO', resume=False,
-        work_dir=work_dir or f'runs/{FLOW[method]}_{backbone}_{seed}',
+        # FLOW is keyed by (method, ablation), not by method alone: keyed by
+        # method the four HD control arms and plain HD all default to the same
+        # directory, so running two of them without passing --out would have the
+        # second overwrite the first's checkpoints. See chamnet.config.combos.
+        work_dir=work_dir or f'runs/{FLOW[(method, ablation)]}_{backbone}_{seed}',
     ))
     return cfg

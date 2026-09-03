@@ -2,7 +2,7 @@ from chamnet.config.schema import load_recipe
 
 
 def test_paper_recipe_values_are_frozen():
-    r = load_recipe('paper_v13')
+    r = load_recipe('paper')
     assert r.data.size == (512, 512)
     assert r.data.keep_ratio is False
     assert r.runtime.batch_size == 16
@@ -22,7 +22,7 @@ def test_paper_recipe_values_are_frozen():
 
 
 def test_per_backbone_overrides_merge():
-    r = load_recipe('paper_v13')
+    r = load_recipe('paper')
     base = r.optim_for('resnet18')
     assert base['weight_decay'] == 0.01
     assert base['paramwise_cfg']['custom_keys']['head']['lr_mult'] == 5.0
@@ -43,4 +43,4 @@ def test_quick_recipe_is_shorter_but_same_shape():
     q = load_recipe('quick')
     assert q.schedule.max_iters == 200
     assert q.runtime.seeds == [31]
-    assert q.loss.class_weight == load_recipe('paper_v13').loss.class_weight
+    assert q.loss.class_weight == load_recipe('paper').loss.class_weight

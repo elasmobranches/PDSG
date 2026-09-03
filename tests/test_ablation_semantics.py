@@ -88,7 +88,7 @@ def _hd_backbone(backbone, depth_pretrained=None, ablation=None):
     """Build just the HD backbone `build_config` emits, optionally overriding
     depth_pretrained so the same code path can be run as its own control."""
     cfg = build_config(method='hd', backbone=backbone, ablation=ablation,
-                       recipe='paper_v13', seed=37)
+                       recipe='paper', seed=37)
     stem = copy.deepcopy(cfg.model['backbone'])
     if depth_pretrained is not None:
         stem['depth_pretrained'] = depth_pretrained
@@ -118,7 +118,7 @@ def test_hd_depth_encoder_actually_loads_pretrained(backbone):
     ResNet only when it was meant to be uniform across backbones — so the
     check is on the weights themselves, not on the flag or the log line.
     """
-    assert build_config(method='hd', backbone=backbone, recipe='paper_v13',
+    assert build_config(method='hd', backbone=backbone, recipe='paper',
                         seed=37).model['backbone']['depth_pretrained'] is True, (
         'precondition: the recipe asks for a pretrained HD depth encoder')
     model = _hd_backbone(backbone)
@@ -267,7 +267,7 @@ def _get_by_path(module, dotted):
 
 def _backbone(method, backbone):
     """Build just the backbone `build_config` emits for (method, backbone)."""
-    cfg = build_config(method=method, backbone=backbone, recipe='paper_v13', seed=37)
+    cfg = build_config(method=method, backbone=backbone, recipe='paper', seed=37)
     with chamnet.scoped(cfg):
         return MODELS.build(copy.deepcopy(cfg.model['backbone']))
 

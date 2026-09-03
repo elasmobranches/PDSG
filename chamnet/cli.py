@@ -26,9 +26,14 @@ def _common(sp):
     sp.add_argument('--method', required=True, choices=METHODS)
     sp.add_argument('--backbone', required=True, choices=sorted(BACKBONES))
     sp.add_argument('--ablation', default=None, choices=ABLATIONS)
-    sp.add_argument('--recipe', default='paper_v13')
+    sp.add_argument('--recipe', default='paper')
     sp.add_argument('--data', default=None, help='데이터 루트. 레시피 값을 덮어쓴다')
     sp.add_argument('--seed', type=int, default=31)
+
+
+def _names(spec: str) -> list[str]:
+    """Split a comma-separated CLI list, tolerating spaces after the commas."""
+    return [name.strip() for name in spec.split(',') if name.strip()]
 
 
 def _cfg(a):
@@ -44,16 +49,42 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser('train'); _common(p); p.add_argument('--out', default=None)
     p = sub.add_parser('test');  _common(p)
-    p.add_argument('--checkpoint', required=True)
+    p.add_argument('--checkpoint', required=True,
+                   help='checkpoint to score. Loading it executes pickled '
+                        'code, so load only checkpoints you trust: reading a '
+                        'checkpoint written by mmengine needs a wider '
+                        'unpickler than torch enables by default, and this '
+                        'command turns that default off for the load.')
     p = sub.add_parser('export-config'); _common(p)
     p.add_argument('-o', '--out', required=True)
     p = sub.add_parser('sweep')
-    p.add_argument('--recipe', default='paper_v13')
+    p.add_argument('--recipe', default='paper')
     p.add_argument('--methods', default=','.join(METHODS))
     p.add_argument('--backbones', default=','.join(sorted(BACKBONES)))
+    # One ablation per sweep, applied to every method named in --methods. The
+    # control arms exist on one or two methods each, so `--methods hd
+    # --ablation nogate` is how you ask for one; mixing an ablation with a
+    # method that has no such arm is refused up front rather than after the
+    # earlier combinations have spent hours on the GPU.
+    p.add_argument('--ablation', default=None, choices=ABLATIONS)
     p.add_argument('--seeds', default=None, help='예: 31-40 또는 31,32')
     p.add_argument('--data', default=None)
     p.add_argument('--out', default='runs/sweep')
+    p.add_argument('--eval-seed', type=int, default=None,
+                   help='score every run at this randomness.seed instead of '
+                        'at its own. Reproducing the paper\'s recorded '
+                        'numbers for SegNeXt-T and the shuffled control arms '
+                        'needs it: their evaluation consumes randomness, and '
+                        'the original runs were all scored at one fixed seed '
+                        'rather than at the seed they were trained at (see '
+                        'RECORDED_EVAL_SEED in tools/replay.py). Leave unset '
+                        'for a fresh sweep.')
+    p.add_argument('--git-hash', default=None,
+                   help='value for the results CSV\'s git_hash column. '
+                        'Defaults to the commit of this checkout (plus '
+                        '"-dirty" when tracked files differ from it); pass it '
+                        'explicitly when running from a copy with no git '
+                        'history, where it would otherwise read "unknown".')
     p = sub.add_parser('smoke'); p.add_argument('--all', action='store_true')
     sub.add_parser('list')
 
@@ -80,16 +111,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.cmd == 'test':
         from mmengine.runner import Runner
+
+        from chamnet.checkpoint import mmengine_checkpoint_loading
         cfg = _cfg(a)
         cfg.load_from = a.checkpoint
-        Runner.from_cfg(cfg).test()
+        # torch >= 2.6 cannot unpickle an mmengine checkpoint's logging state
+        # under its default safe loader -- see chamnet.checkpoint.
+        with mmengine_checkpoint_loading():
+            Runner.from_cfg(cfg).test()
         return 0
 
     if a.cmd == 'sweep':
-        from chamnet.sweep import run_sweep, parse_seeds
-        run_sweep(recipe=a.recipe, methods=a.methods.split(','),
-                  backbones=a.backbones.split(','), seeds=parse_seeds(a.seeds, a.recipe),
-                  data_root=a.data, out_dir=a.out)
+        from chamnet.sweep import parse_seeds, run_sweep
+        csv_path = run_sweep(recipe=a.recipe, methods=_names(a.methods),
+                             backbones=_names(a.backbones),
+                             seeds=parse_seeds(a.seeds, a.recipe),
+                             data_root=a.data, out_dir=a.out,
+                             ablation=a.ablation, git_hash=a.git_hash,
+                             eval_seed=a.eval_seed)
+        print(csv_path)
         return 0
 
     if a.cmd == 'smoke':
