@@ -34,7 +34,7 @@ from mmengine.runner.checkpoint import _load_checkpoint, load_state_dict
 from mmseg.registry import MODELS
 from mmseg.models.backbones.mscan import MSCAN, StemConv
 
-from chamnet.models.fusion import CrossModalGating, DepthBranch
+from chamnet.models.fusion import BiGateGating, CrossModalGating, DepthBranch
 from chamnet.models.depth_pretrain import load_rgb_into_depth_encoder
 
 
@@ -173,7 +173,8 @@ class DualMSCANLateFusion(MSCAN):
     FIRST_CONV_KEY = 'patch_embed1.proj.0.weight'
 
     def __init__(self, embed_dims=(32, 64, 160, 256), fusion_reduction=4,
-                 depth_pretrained: bool = False, **kwargs):
+                 depth_pretrained: bool = False, fusion_use_gate: bool = True,
+                 **kwargs):
         # RGB stream always 3ch
         kwargs['in_channels'] = 3
         super().__init__(embed_dims=list(embed_dims), **kwargs)
@@ -201,7 +202,8 @@ class DualMSCANLateFusion(MSCAN):
 
         # Serial CrossModalGating × 4
         self.fusions = nn.ModuleList([
-            CrossModalGating(dim, reduction=fusion_reduction)
+            CrossModalGating(dim, reduction=fusion_reduction,
+                             use_gate=fusion_use_gate)
             for dim in stage_dims
         ])
 
@@ -262,6 +264,91 @@ class DualMSCANLateFusion(MSCAN):
             feat = feat.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()  # NCHW
 
             # Depth-guided serial gating (residual)
+            feat = self.fusions[i](feat, depth_feats[i])
+            outs.append(feat)
+
+        return outs
+
+
+# ---------------------------------------------------------------------------
+# Control arms for HD (see chamnet/config/combos.py for the enabled set)
+#
+#   DualMSCANBiGate        — ported verbatim from
+#       mmsegmentation/mmseg/models/backbones/dual_mscan_bigate.py
+#   DualMSCANLateFusionRGB — ported verbatim from
+#       mmsegmentation/mmseg/models/backbones/dual_mscan_rgb.py
+#
+# Only the imports changed: BiGateGating comes from chamnet.models.fusion
+# (upstream it came from dual_resnet_bigate.py) and StemConv from mmseg's own
+# backbones module. No class body was modified during the move.
+# ---------------------------------------------------------------------------
+
+
+@MODELS.register_module()
+class DualMSCANBiGate(DualMSCANLateFusion):
+    """Replaces CMG fusion with bidirectional multiplicative channel gating."""
+
+    def __init__(self, embed_dims=(32, 64, 160, 256), fusion_reduction=4,
+                 **kwargs):
+        super().__init__(embed_dims=embed_dims,
+                         fusion_reduction=fusion_reduction, **kwargs)
+        stage_dims = tuple(embed_dims)
+        self.fusions = nn.ModuleList([
+            BiGateGating(dim, reduction=fusion_reduction) for dim in stage_dims
+        ])
+        print_log(
+            '[DualMSCANBiGate] Fusion replaced with bidirectional '
+            f'multiplicative channel gating. Stage dims: {stage_dims}',
+            logger='current')
+
+
+@MODELS.register_module()
+class DualMSCANLateFusionRGB(DualMSCANLateFusion):
+    """Depth-slot MSCAN takes 3-channel RGB instead of 1-channel depth."""
+
+    def __init__(self, embed_dims=(32, 64, 160, 256), fusion_reduction=4,
+                 depth_pretrained: bool = False, **kwargs):
+        super().__init__(embed_dims=embed_dims,
+                         fusion_reduction=fusion_reduction,
+                         depth_pretrained=depth_pretrained, **kwargs)
+        # The parent swapped in a 1-channel StemConv for its depth encoder.
+        # Put a 3-channel one back so the encoder can take RGB; init_weights()
+        # then copies the pretrained stem straight across instead of averaging.
+        norm_cfg = kwargs.get('norm_cfg', dict(type='SyncBN', requires_grad=True))
+        act_cfg = kwargs.get('act_cfg', dict(type='GELU'))
+        self.depth_backbone.patch_embed1 = StemConv(
+            in_channels=3,
+            out_channels=embed_dims[0],
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg,
+        )
+        print_log(
+            '[DualMSCANLateFusionRGB] Depth encoder: 3ch RGB input, '
+            f'{"pretrained (RGB ckpt)" if depth_pretrained else "random"} '
+            'init (ablation: capacity control without depth geometry).',
+            logger='current')
+
+    def forward(self, x: torch.Tensor):
+        """Args: x (B, 3, H, W) — RGB only. Mirrors the parent loop."""
+        rgb = x[:, :3]
+        depth = x[:, :3]          # same RGB fed to the depth-slot encoder
+
+        depth_feats = self.depth_backbone(depth)
+
+        B = rgb.shape[0]
+        outs = []
+        feat = rgb
+        for i in range(self.num_stages):
+            patch_embed = getattr(self, f'patch_embed{i + 1}')
+            block = getattr(self, f'block{i + 1}')
+            norm = getattr(self, f'norm{i + 1}')
+
+            feat, H, W = patch_embed(feat)
+            for blk in block:
+                feat = blk(feat, H, W)
+            feat = norm(feat)
+            feat = feat.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+
             feat = self.fusions[i](feat, depth_feats[i])
             outs.append(feat)
 

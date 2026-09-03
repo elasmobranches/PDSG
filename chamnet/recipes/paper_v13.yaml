@@ -35,7 +35,11 @@ schedule:
 
 runtime:
   batch_size: 16
+  # 데이터로더 워커 수. train 과 val/test 가 다르다 — 논문 실행이 그랬고,
+  # 이 값은 성능 노브가 아니다: shuffled 통제군은 표본마다 난수를 뽑으므로
+  # 워커 수가 바뀌면 평가 입력 자체가 바뀐다 (verification/README.md 참고).
   num_workers: 8
+  num_workers_eval: 4
   val_interval: 20
   early_stopping: {monitor: mIoU, patience: 20, min_delta: 0.01}
   save_best: mIoU

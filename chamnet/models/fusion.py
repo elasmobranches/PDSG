@@ -426,6 +426,14 @@ class CrossModalGating(nn.Module):
 
 # ---------------------------------------------------------------------------
 # Bidirectional Gating (HD-BiGate)
+#
+# Upstream this class existed twice, in dual_resnet_bigate.py and
+# dual_mit_bigate.py. The two bodies were byte-identical; only the docstring
+# differed, the MiT copy's saying merely that it matched the ResNet one. The
+# ResNet copy's docstring is the one kept here because it states the
+# formulation. Consolidating is not cosmetic: the four HD-BiGate backbones
+# were comparing gate designs across backbones, and two definitions of the
+# gate is exactly where that comparison would silently stop being fair.
 # ---------------------------------------------------------------------------
 
 class BiGateGating(nn.Module):

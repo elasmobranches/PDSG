@@ -57,7 +57,7 @@ from mmseg.registry import MODELS
 from mmseg.models.backbones.mit import MixVisionTransformer
 from mmseg.models.utils import nlc_to_nchw
 
-from chamnet.models.fusion import CrossModalGating, DepthBranch
+from chamnet.models.fusion import BiGateGating, CrossModalGating, DepthBranch
 from chamnet.models.depth_pretrain import load_rgb_into_depth_encoder
 
 
@@ -174,10 +174,10 @@ class DualMiTB0(MixVisionTransformer):
 # mmsegmentation/mmseg/models/backbones/dual_mit_late.py — only the imports
 # changed (CrossModalGating from chamnet.models.fusion,
 # load_rgb_into_depth_encoder from chamnet.models.depth_pretrain, and mmseg's
-# own MixVisionTransformer/nlc_to_nchw). That file's other two classes,
-# DualMiTB0LateFusionRGB and DualMiTB0BiCMG, are ablations that are not part
-# of this release yet and are not ported here. No class body was modified
-# during the move.
+# own MixVisionTransformer/nlc_to_nchw). Of that file's other two classes,
+# DualMiTB0LateFusionRGB is ported in the control-arm section at the bottom of
+# this module and DualMiTB0BiCMG is not (no paper run used it). No class body
+# was modified during the move.
 # ---------------------------------------------------------------------------
 
 
@@ -314,6 +314,137 @@ class DualMiTB0LateFusion(MixVisionTransformer):
             # fusion_stages stay pure RGB.
             if i in self.fusion_stages:
                 feat = self.fusions[i](feat, depth_feats[i])
+
+            if i in self.out_indices:
+                outs.append(feat)
+
+        return outs
+
+
+# ---------------------------------------------------------------------------
+# Control arms for HD (see chamnet/config/combos.py for the enabled set)
+#
+#   DualMiTB0BiGate — ported verbatim from
+#       mmsegmentation/mmseg/models/backbones/dual_mit_bigate.py; only the
+#       import changed (BiGateGating from chamnet.models.fusion — the source
+#       file defined its own copy, identical to the ResNet one bar the
+#       docstring, and this package keeps a single definition instead).
+#   DualMiTB0LateFusionRGB — ported verbatim from dual_mit_late.py, the same
+#       source file DualMiTB0LateFusion above came from; no import changed.
+#
+# The third class in dual_mit_late.py, DualMiTB0BiCMG, is an experimental
+# fusion variant that no paper run used and is not ported. No class body was
+# modified during either move.
+# ---------------------------------------------------------------------------
+
+
+@MODELS.register_module()
+class DualMiTB0BiGate(DualMiTB0LateFusion):
+    """HD-BiGate variant for MiT-B0: replaces CMG fusion with bidirectional gating.
+
+    Inherits the full RGB+Depth dual MiT-B0 structure from DualMiTB0LateFusion.
+    Only the per-stage fusion modules are replaced, isolating the fusion mechanism.
+
+    Usage in config::
+
+        backbone=dict(
+            type='DualMiTB0BiGate',
+            embed_dims=32, num_heads=[1, 2, 5, 8], mlp_ratio=4,
+            qkv_bias=True, drop_rate=0.0, attn_drop_rate=0.0,
+            drop_path_rate=0.1, num_layers=[2, 2, 2, 2],
+            sr_ratios=[8, 4, 2, 1],
+            norm_cfg=dict(type='LN', eps=1e-6),
+            act_cfg=dict(type='GELU'),
+            out_indices=(0, 1, 2, 3),
+            fusion_reduction=4,
+            init_cfg=dict(type='Pretrained', checkpoint=...))
+    """
+
+    def __init__(self, fusion_reduction: int = 4, init_cfg=None, **kwargs):
+        # NOTE: parent uses fusion_use_gate; force True so CMG is constructed
+        # then replaced. (We replace self.fusions below regardless.)
+        kwargs.pop('fusion_use_gate', None)
+        super().__init__(fusion_reduction=fusion_reduction,
+                         fusion_use_gate=True, init_cfg=init_cfg, **kwargs)
+
+        stage_dims = tuple(self.embed_dims * h for h in self.num_heads)
+
+        # Replace CMG with bidirectional channel gating
+        self.fusions = nn.ModuleList([
+            BiGateGating(dim, reduction=fusion_reduction)
+            for dim in stage_dims
+        ])
+
+        print_log(
+            '[DualMiTB0BiGate] Fusion replaced with bidirectional '
+            'multiplicative channel gating. '
+            f'Stage dims: {stage_dims}',
+            logger='current')
+
+
+@MODELS.register_module()
+class DualMiTB0LateFusionRGB(DualMiTB0LateFusion):
+    """HD-RGB ablation (MiT-B0): depth encoder receives RGB (3ch) instead of pseudo-depth.
+
+    두 인코더 모두 동일한 RGB 입력을 받습니다:
+      - RGB  인코더: pretrained MiT-B0 (3ch)
+      - Depth 인코더: random init MiT-B0 (3ch, RGB 입력)
+
+    capacity 통제군: depth 공간 구조 없이 모델 용량만 동일하게 유지.
+    depth 인코더 초기화는 ``depth_pretrained`` 를 따른다 — HD와 같은 값을 주어야 통제된다.
+
+    입력: (B, 3, H, W) — depth 채널 불필요, LoadDepthAsChannel 사용 안 함.
+
+    Mirror of DualResNetV1c18LateFusionRGB but for MiT-B0 backbone.
+    """
+
+    def __init__(self, fusion_reduction: int = 4, fusion_use_gate: bool = True,
+                 depth_pretrained: bool = False, init_cfg=None, **kwargs):
+        # depth_pretrained 는 여기서 이름으로 받아야 한다. **kwargs 로 흘려보내면
+        # 아래 depth_kwargs 에 남아 MixVisionTransformer 생성자로 새어 들어간다.
+        super().__init__(fusion_reduction=fusion_reduction,
+                         fusion_use_gate=fusion_use_gate,
+                         depth_pretrained=depth_pretrained,
+                         init_cfg=init_cfg, **kwargs)
+
+        # depth_backbone을 3ch (RGB 입력) MiT-B0로 교체
+        depth_kwargs = dict(kwargs)
+        depth_kwargs.pop('in_channels', None)
+        depth_kwargs['out_indices'] = (0, 1, 2, 3)
+        self.depth_backbone = MixVisionTransformer(
+            in_channels=3,
+            init_cfg=None,        # 적재는 init_weights() 에서 처리
+            **depth_kwargs,
+        )
+
+        print_log(
+            '[DualMiTB0LateFusionRGB] Depth encoder: 3ch RGB input, '
+            f'{"pretrained (RGB ckpt)" if self.depth_pretrained else "random"} '
+            'init (ablation: capacity control without depth geometry).',
+            logger='current')
+
+    def forward(self, x: torch.Tensor):
+        """
+        Args:
+            x: (B, 3, H, W) — RGB only (depth 채널 없음)
+        Returns:
+            List of depth-injected feature maps at out_indices stages.
+        """
+        rgb   = x[:, :3]   # (B, 3, H, W)
+        depth = x[:, :3]   # (B, 3, H, W) — same RGB fed to depth encoder
+
+        depth_feats = self.depth_backbone(depth)  # [d0, d1, d2, d3]
+
+        feat = rgb
+        outs = []
+        for i, layer in enumerate(self.layers):
+            feat, hw_shape = layer[0](feat)
+            for block in layer[1]:
+                feat = block(feat, hw_shape)
+            feat = layer[2](feat)
+            feat = nlc_to_nchw(feat, hw_shape)
+
+            feat = self.fusions[i](feat, depth_feats[i])
 
             if i in self.out_indices:
                 outs.append(feat)

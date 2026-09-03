@@ -1,4 +1,4 @@
-# commit=df3860a date=2026-09-02T03:47:11.797106+00:00 gpu='NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition' torch=2.9.0a0+50eac811a6.nv25.09 mmseg=1.2.2
+# commit=022c0dd date=2026-09-02T06:09:56.750782+00:00 gpu='NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition' torch=2.9.0a0+50eac811a6.nv25.09 mmseg=1.2.2
 method,backbone,ablation,replay_mIoU,recorded_mIoU,replay_pillar,recorded_pillar
 bl,resnet18,-,80.95,80.95,80.0,80.0
 bl,mit_b0,-,79.48,79.48,76.05,76.05
@@ -9,10 +9,30 @@ ef,mit_b0,-,79.31,79.31,77.87,77.87
 ef,segnext_t,-,80.86,80.84,80.67,80.59
 ef,convnext_atto,-,80.54,80.54,82.59,82.59
 sd,resnet18,-,82.09,82.09,83.75,83.75
-sd,mit_b0,-,79.32,79.32,80.4,80.4
+sd,mit_b0,-,79.33,79.32,80.4,80.4
 sd,segnext_t,-,80.54,80.51,80.47,80.29
 sd,convnext_atto,-,81.03,81.03,82.64,82.64
 hd,resnet18,-,81.88,81.88,84.01,84.01
 hd,mit_b0,-,80.52,80.52,79.02,79.02
 hd,segnext_t,-,80.52,80.62,82.21,82.31
 hd,convnext_atto,-,81.18,81.18,79.19,79.19
+hd,resnet18,nogate,81.53,81.53,82.62,82.62
+hd,mit_b0,nogate,80.09,80.09,78.55,78.56
+hd,segnext_t,nogate,79.64,79.69,79.2,79.74
+hd,convnext_atto,nogate,80.77,80.77,83.69,83.69
+hd,resnet18,bigate,81.23,81.23,79.97,79.97
+hd,mit_b0,bigate,79.76,79.76,73.71,73.71
+hd,segnext_t,bigate,80.88,80.84,82.73,82.67
+hd,convnext_atto,bigate,81.11,81.11,83.19,83.19
+hd,resnet18,shuffled,80.96,80.97,80.43,80.4
+hd,mit_b0,shuffled,76.69,76.71,73.65,73.79
+hd,segnext_t,shuffled,79.57,79.66,78.21,78.34
+hd,convnext_atto,shuffled,81.07,81.1,79.82,79.68
+hd,resnet18,rgb,80.12,80.12,78.01,78.01
+hd,mit_b0,rgb,78.66,78.66,76.33,76.33
+hd,segnext_t,rgb,80.83,80.84,78.89,78.81
+hd,convnext_atto,rgb,80.02,80.02,79.25,79.25
+ef,resnet18,shuffled,79.68,79.8,77.92,78.17
+ef,mit_b0,shuffled,78.07,78.05,74.0,73.96
+ef,segnext_t,shuffled,80.17,80.16,75.41,75.53
+ef,convnext_atto,shuffled,78.79,78.85,76.45,76.4

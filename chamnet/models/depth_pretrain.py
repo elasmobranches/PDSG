@@ -13,7 +13,9 @@ while mIoU is unchanged. The point of this module is to make the choice a
 controlled variable rather than an accident of which class you instantiate.
 
 Transfer rule: every layer is copied verbatim; only the first convolution is
-adapted, by averaging its three input channels into one. Averaging (rather
+adapted, and only when the depth encoder takes one channel -- by averaging its
+three input channels into one. A 3-channel depth-slot encoder (the HD-RGB
+capacity control) gets the filters copied straight across, no adaptation. Averaging (rather
 than summing) preserves activation scale for a single-channel input, which is
 the usual RGB-to-grayscale transfer. It matches what
 ``DualResNetV1c18LateFusion._load_pretrained_depth`` already does.
@@ -54,13 +56,6 @@ def load_rgb_into_depth_encoder(depth_backbone, state_dict, first_conv_key, tag)
             log both claim otherwise, which is the failure mode this guard
             exists to prevent.
     """
-    adapted = {}
-    for k, v in state_dict.items():
-        if k == first_conv_key and hasattr(v, 'dim') and v.dim() == 4 \
-                and v.shape[1] == 3:
-            v = v.mean(dim=1, keepdim=True)      # (out,3,k,k) -> (out,1,k,k)
-        adapted[k] = v
-
     conv_path = first_conv_key[:-len('.weight')]
     try:
         conv = _get_by_path(depth_backbone, conv_path)
@@ -71,10 +66,19 @@ def load_rgb_into_depth_encoder(depth_backbone, state_dict, first_conv_key, tag)
     if not isinstance(conv, nn.Conv2d):
         raise RuntimeError(
             f'[{tag}] {conv_path!r} is {type(conv).__name__}, not Conv2d')
-    if conv.in_channels != 1:
+    if conv.in_channels not in (1, 3):
         raise RuntimeError(
             f'[{tag}] depth encoder first conv takes {conv.in_channels} '
-            f'channels, expected 1')
+            f'channels, expected 1 or 3')
+
+    # 1ch (raw metric depth): average the three RGB filters, preserving scale.
+    # 3ch (HD-RGB capacity control): copy straight across, no adaptation.
+    adapted = {}
+    for k, v in state_dict.items():
+        if k == first_conv_key and hasattr(v, 'dim') and v.dim() == 4 \
+                and v.shape[1] == 3 and conv.in_channels == 1:
+            v = v.mean(dim=1, keepdim=True)      # (out,3,k,k) -> (out,1,k,k)
+        adapted[k] = v
 
     before = conv.weight.detach().norm().item()
     missing, unexpected = depth_backbone.load_state_dict(adapted, strict=False)
@@ -89,9 +93,11 @@ def load_rgb_into_depth_encoder(depth_backbone, state_dict, first_conv_key, tag)
             f'unexpected={list(unexpected)[:5]}). Refusing to silently train '
             f'on random-init depth weights.')
 
+    how = ('3ch->1ch channel-averaged' if conv.in_channels == 1
+           else '3ch copied directly')
     print_log(
         f'[{tag}] Depth encoder: pretrained init from the RGB checkpoint '
-        f'({conv_path} 3ch->1ch channel-averaged). matched={matched}/'
+        f'({conv_path} {how}). matched={matched}/'
         f'{len(state_dict)} keys, norm {before:.4f} -> {after:.4f}.',
         logger='current')
     return matched

@@ -7,7 +7,8 @@ from pathlib import Path
 from mmengine.config import Config
 
 from chamnet.config.backbones import (BACKBONES, EF_EXTRA_CHANNEL_INIT,
-                                      EF_STEM_DELTA, EF_TYPE, HD_OPTIM_EXTRA,
+                                      EF_STEM_DELTA, EF_TYPE, HD_BIGATE_TYPE,
+                                      HD_OPTIM_EXTRA, HD_RGB_TYPE,
                                       HD_STEM_DELTA, HD_TYPE, NORM, SD_TYPE)
 from chamnet.config.combos import validate
 from chamnet.config.schema import Recipe, load_recipe
@@ -148,7 +149,7 @@ def _ef_stem(backbone: str, bl_stem: dict, pretrained, stem_channels: int):
 
 
 def _hd_stem(backbone: str, bl_stem: dict, pretrained, stem_channels: int,
-             depth_pretrained: bool):
+             depth_pretrained: bool, ablation: str | None = None):
     """Build the HD (Dual+, heavy depth-branch) backbone stem for `backbone`.
 
     Same shape of derivation as `_sd_stem`: start from the BL stem for the
@@ -164,28 +165,75 @@ def _hd_stem(backbone: str, bl_stem: dict, pretrained, stem_channels: int,
     through a separate depth encoder, so there is no config key to set it on.
     Raising rather than asserting keeps the invariant enforced under
     `python -O`.
+
+    `ablation` selects among HD's control arms, and the whole point of the
+    comparison is that they differ from HD in exactly one thing each -- so
+    each is expressed as the smallest possible edit to the same dict rather
+    than as its own branch:
+
+    ``'bigate'`` / ``'rgb'``  swap `type` for the class in HD_BIGATE_TYPE /
+        HD_RGB_TYPE and change nothing else. Notably `rgb` keeps
+        `depth_pretrained` at HD's value: the arm controls for capacity *and*
+        for initialisation, so its depth-slot encoder has to start where HD's
+        did.
+    ``'nogate'``  adds `fusion_use_gate=False`, which makes CrossModalGating
+        skip building a gate at all and inject `rgb + d_proj` unweighted.
+    ``'shuffled'``  changes no backbone key whatsoever -- it is a pipeline
+        step (see `_pipelines`), and reaching this function it is
+        indistinguishable from plain HD, which is correct.
+
+    Verified against tests/fixtures/paper/hd-{nogate,bigate,rgb,shuffled}_*
+    .merged.py: every one of those twenty backbone dicts is HD's for the same
+    backbone with only the edit named above.
     """
     if stem_channels != 3:
         raise ValueError(
             f'HD backbones always take a 3-channel RGB stem; got {stem_channels}')
+    hd_type = {'bigate': HD_BIGATE_TYPE, 'rgb': HD_RGB_TYPE}.get(
+        ablation, HD_TYPE)[backbone]
     if backbone == 'convnext_atto':
         # DualConvNeXtAttoPlusSerial calls timm.create_model itself for both
         # streams, so none of TIMMBackbone's config keys (the BL stem) apply.
-        return dict(type=HD_TYPE[backbone], fusion_reduction=4,
+        stem = dict(type=hd_type, fusion_reduction=4,
                     depth_pretrained=depth_pretrained)
-    delta = HD_STEM_DELTA[backbone]
-    stem = copy.deepcopy(bl_stem)
-    for key in delta['drop']:
-        stem.pop(key, None)
-    stem.update(copy.deepcopy(delta['add']))
-    stem['type'] = HD_TYPE[backbone]
-    stem['depth_pretrained'] = depth_pretrained
-    if pretrained:
-        stem['init_cfg'] = dict(type='Pretrained', checkpoint=pretrained)
+    else:
+        delta = HD_STEM_DELTA[backbone]
+        stem = copy.deepcopy(bl_stem)
+        for key in delta['drop']:
+            stem.pop(key, None)
+        stem.update(copy.deepcopy(delta['add']))
+        stem['type'] = hd_type
+        stem['depth_pretrained'] = depth_pretrained
+        if pretrained:
+            stem['init_cfg'] = dict(type='Pretrained', checkpoint=pretrained)
+    if ablation == 'nogate':
+        stem['fusion_use_gate'] = False
     return stem
 
 
 def _pipelines(r: Recipe, data_channels, shuffle):
+    """Return (train_pipeline, val/test_pipeline) for this run.
+
+    Two things here are easy to get wrong in opposite directions, so both are
+    taken from the paper's own merged configs rather than from what sounds
+    principled:
+
+    `shuffle` (the depth-structure control) is applied to **every** split --
+    train, val and test -- immediately before PackSegInputs. The arm's claim is
+    that depth's contribution is its spatial arrangement, so it has to be
+    measured on a model that never sees arranged depth at any point; validating
+    on unshuffled depth would select checkpoints on a distribution the arm
+    never trains or tests on. Reading the fixtures needs care on exactly this
+    point: hd-shuffled_*.merged.py and ef-shuffled_*.merged.py do define a
+    top-level `val_test_pipeline` without the shuffle step, but nothing uses
+    it -- their `val_dataloader.dataset.pipeline` is the shuffled
+    `test_pipeline`, verified in all eight. The dataloader is what runs.
+
+    `data_channels == 3` (hd-rgb, and bl) emits **no depth loader at all**,
+    rather than loading depth and letting the backbone drop it. hd-rgb feeds
+    the RGB image to the depth-slot encoder, so there is no depth to read; the
+    preprocessor is 3-channel to match.
+    """
     load_depth = dict(type='LoadDepthAsChannel', depth_dir_name='depth',
                       depth_suffix='.npy', img_dir_name='images', max_depth=None)
     resize = dict(type='Resize', scale=tuple(r.data.size), keep_ratio=r.data.keep_ratio)
@@ -205,9 +253,22 @@ def _pipelines(r: Recipe, data_channels, shuffle):
     return train, test
 
 
-def _dataloader(r: Recipe, split_dir, pipeline, root, batch_size, shuffle_sampler):
+def _dataloader(r: Recipe, split_dir, pipeline, root, batch_size, num_workers,
+                shuffle_sampler):
+    """Build one split's dataloader.
+
+    `num_workers` is passed in rather than read from the recipe here because
+    the paper's runs used a different number for training (8) than for
+    evaluation (4), and that is not a performance-only knob. The shuffled
+    control arms draw a fresh permutation *per sample* inside the worker
+    processes, so the worker count decides which permutations the model is
+    scored on: on hd/shuffled/resnet18, 8 workers gives 80.91/80.52 and 4
+    gives 80.96/80.43 against a recorded 80.97/80.40, reproducibly. See
+    verification/README.md. Emitting one value for every split would silently
+    evaluate those arms on different inputs than the paper did.
+    """
     return dict(
-        batch_size=batch_size, num_workers=r.runtime.num_workers,
+        batch_size=batch_size, num_workers=num_workers,
         persistent_workers=False,
         sampler=dict(type='InfiniteSampler', shuffle=True) if shuffle_sampler
         else dict(type='DefaultSampler', shuffle=False),
@@ -243,7 +304,14 @@ def build_config(method: str, backbone: str, ablation: str | None = None,
     # RGB stem regardless of data_channels (a separate depth branch consumes
     # the extra channel), and hd-rgb ablates that again -- which is why the two
     # stay separate names.
-    data_channels = 3 if method in ('bl',) else 4
+    #
+    # hd-rgb is the one arm where a 4-channel *method* loads 3 channels: its
+    # depth-slot encoder is fed the RGB image, so depth is never read at all.
+    # Not read-and-discarded -- `_pipelines` emits no LoadDepthAsChannel step
+    # and the preprocessor's mean/std carry three entries, exactly as in
+    # tests/fixtures/paper/hd-rgb_*.merged.py.
+    rgb_control = method == 'hd' and ablation == 'rgb'
+    data_channels = 3 if method == 'bl' or rgb_control else 4
     stem_channels = 3 if method in ('sd', 'hd') else data_channels
     shuffle = ablation == 'shuffled'
 
@@ -253,7 +321,7 @@ def build_config(method: str, backbone: str, ablation: str | None = None,
         stem = _sd_stem(backbone, spec['stem'], spec['pretrained'], stem_channels)
     elif method == 'hd':
         stem = _hd_stem(backbone, spec['stem'], spec['pretrained'], stem_channels,
-                        r.hd.depth_pretrained)
+                        r.hd.depth_pretrained, ablation)
     else:
         stem = copy.deepcopy(spec['stem'])
         if 'in_channels' in stem:
@@ -296,9 +364,12 @@ def build_config(method: str, backbone: str, ablation: str | None = None,
         default_scope='mmseg',
         model=model,
         train_dataloader=_dataloader(r, r.data.splits['train'], train_pipe, root,
-                                     r.runtime.batch_size, True),
-        val_dataloader=_dataloader(r, r.data.splits['val'], test_pipe, root, 1, False),
-        test_dataloader=_dataloader(r, r.data.splits['test'], test_pipe, root, 1, False),
+                                     r.runtime.batch_size,
+                                     r.runtime.num_workers, True),
+        val_dataloader=_dataloader(r, r.data.splits['val'], test_pipe, root, 1,
+                                   r.runtime.num_workers_eval, False),
+        test_dataloader=_dataloader(r, r.data.splits['test'], test_pipe, root, 1,
+                                    r.runtime.num_workers_eval, False),
         val_evaluator=dict(type='IoUMetric', iou_metrics=['mIoU', 'mDice', 'mFscore']),
         test_evaluator=dict(type='IoUMetric', iou_metrics=['mIoU', 'mDice', 'mFscore']),
         optim_wrapper=dict(type='OptimWrapper', optimizer=optim,

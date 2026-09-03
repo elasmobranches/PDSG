@@ -48,7 +48,7 @@ from mmengine.runner.checkpoint import _load_checkpoint, load_state_dict
 from mmseg.registry import MODELS
 from mmseg.models.backbones.resnet import ResNetV1c
 
-from chamnet.models.fusion import CrossModalGating, _DWBlock
+from chamnet.models.fusion import BiGateGating, CrossModalGating, _DWBlock
 
 
 # ---------------------------------------------------------------------------
@@ -220,10 +220,10 @@ class DualResNetV1c18(ResNetV1c):
 # Ported verbatim from
 # mmsegmentation/mmseg/models/backbones/dual_resnet_late.py — only the imports
 # changed (CrossModalGating from chamnet.models.fusion, ResNetV1c from mmseg's
-# own backbones module). That file's other two classes,
-# DualResNetV1c18LateFusionRGB and DualResNetV1c18BiCMG, are ablations that
-# are not part of this release yet and are not ported here. No class body was
-# modified during the move.
+# own backbones module). Of that file's other two classes,
+# DualResNetV1c18LateFusionRGB is ported in the control-arm section at the
+# bottom of this module and DualResNetV1c18BiCMG is not (no paper run used
+# it). No class body was modified during the move.
 # ---------------------------------------------------------------------------
 
 _RESNET_STAGE_DIMS = {
@@ -325,7 +325,9 @@ class DualResNetV1c18LateFusion(ResNetV1c):
 
         print_log(
             '[DualResNetV1c18LateFusion] RGB ResNetV1c: pretrained init. '
-            'Depth ResNetV1c (1ch): random init. Serial stage-by-stage injection. '
+            f'Depth ResNetV1c ({depth_in_channels}ch): '
+            f'{"pretrained (RGB ckpt)" if depth_pretrained else "random"} init. '
+            'Serial stage-by-stage injection. '
             f'Stage dims: {self.STAGE_DIMS}, gate_type={fusion_gate_type}, '
             f'pool_mode={fusion_pool_mode}',
             logger='current')
@@ -344,7 +346,8 @@ class DualResNetV1c18LateFusion(ResNetV1c):
             load_state_dict(self, state_dict, strict=False, logger='current')
             print_log(
                 '[DualResNetV1c18LateFusion] RGB ResNetV1c loaded from pretrained. '
-                'Depth ResNetV1c and CrossModalGating: random init.',
+                'CrossModalGating: random init. Depth ResNetV1c: '
+                + ('see next line.' if self.depth_pretrained else 'random init.'),
                 logger='current')
 
             if self.depth_pretrained:
@@ -448,6 +451,136 @@ class DualResNetV1c18LateFusion(ResNetV1c):
             # fusion_stages stay pure RGB.
             if i in self.fusion_stages:
                 rgb = self.fusions[i](rgb, depth_feats[i])
+            if i in self.out_indices:
+                outs.append(rgb)
+
+        return tuple(outs)
+
+
+# ---------------------------------------------------------------------------
+# Control arms for HD (see chamnet/config/combos.py for the enabled set)
+#
+#   DualResNetV1c18BiGate      — ported verbatim from
+#       mmsegmentation/mmseg/models/backbones/dual_resnet_bigate.py; only the
+#       import changed (BiGateGating from chamnet.models.fusion, this
+#       package's single home for the gate modules).
+#   DualResNetV1c18LateFusionRGB — ported verbatim from
+#       dual_resnet_late.py, the same source file DualResNetV1c18LateFusion
+#       above came from; no import changed.
+#
+# The third class in dual_resnet_late.py, DualResNetV1c18BiCMG, is an
+# experimental fusion variant that no paper run used and is not ported.
+# No class body was modified during either move.
+# ---------------------------------------------------------------------------
+
+
+@MODELS.register_module()
+class DualResNetV1c18BiGate(DualResNetV1c18LateFusion):
+    """HD-BiGate variant: replaces CMG fusion with bidirectional multiplicative gating.
+
+    Inherits the full RGB+Depth dual-encoder structure from
+    DualResNetV1c18LateFusion. Only the per-stage fusion modules are replaced.
+
+    All other behaviour (stem, depth_backbone init, forward flow, weight loading)
+    is unchanged so the comparison isolates the fusion mechanism.
+
+    Usage in config::
+
+        backbone=dict(
+            type='DualResNetV1c18BiGate',
+            depth=18, num_stages=4,
+            out_indices=(0, 1, 2, 3),
+            dilations=(1, 1, 2, 4),
+            strides=(1, 2, 1, 1),
+            norm_cfg=norm_cfg,
+            norm_eval=False, style='pytorch', contract_dilation=True,
+            fusion_reduction=4,
+            init_cfg=dict(type='Pretrained', checkpoint='open-mmlab://resnet18_v1c'))
+    """
+
+    def __init__(self, fusion_reduction: int = 4, **kwargs):
+        super().__init__(fusion_reduction=fusion_reduction, **kwargs)
+
+        self.fusions = nn.ModuleList([
+            BiGateGating(dim, reduction=fusion_reduction)
+            for dim in self.STAGE_DIMS
+        ])
+
+        print_log(
+            '[DualResNetV1c18BiGate] Fusion replaced with bidirectional '
+            'multiplicative channel gating. '
+            f'Stage dims: {self.STAGE_DIMS}',
+            logger='current')
+
+
+@MODELS.register_module()
+class DualResNetV1c18LateFusionRGB(DualResNetV1c18LateFusion):
+    """HD-RGB ablation: depth encoder receives RGB (3ch) instead of pseudo-depth.
+
+    두 인코더 모두 동일한 RGB 입력을 받습니다:
+      - RGB  인코더: pretrained ResNetV1c-18 (3ch)
+      - Depth 인코더: random init ResNetV1c-18 (3ch, RGB 입력)
+
+    capacity 통제군: depth 공간 구조 없이 모델 용량만 동일하게 유지.
+    depth 인코더 초기화는 ``depth_pretrained`` 를 따른다 — HD와 같은 값을 주어야
+    초기화가 통제된다. v12+ recipe 는 HD 를 depth_pretrained=True 로 돌리므로
+    이 통제군도 True 로 맞춘다.
+
+    입력: (B, 3, H, W) — depth 채널 불필요, LoadDepthAsChannel 사용 안 함.
+    """
+
+    def __init__(self, fusion_reduction: int = 4, fusion_use_gate: bool = True,
+                 fusion_gate_type: str = 'channel',
+                 depth_pretrained: bool = False, **kwargs):
+        # depth_pretrained 는 여기서 이름으로 받아야 한다. **kwargs 로 흘려보내면
+        # 아래 depth_kwargs 에 남아 ResNetV1c 생성자로 새어 들어간다.
+        super().__init__(fusion_reduction=fusion_reduction,
+                         fusion_use_gate=fusion_use_gate,
+                         fusion_gate_type=fusion_gate_type,
+                         depth_pretrained=depth_pretrained, **kwargs)
+
+        # 부모와 동일한 방식으로 depth_kwargs 구성 (fusion_* 제외, in_channels=3 오버라이드)
+        depth_kwargs = dict(kwargs)
+        for _k in ('depth_in_channels',):
+            depth_kwargs.pop(_k, None)
+        depth_kwargs['in_channels'] = 3   # RGB 3ch
+        depth_kwargs['init_cfg'] = None   # 적재는 init_weights() 에서 처리
+        depth_kwargs['out_indices'] = (0, 1, 2, 3)
+        self.depth_backbone = ResNetV1c(**depth_kwargs)
+        # The parent set this to 1 for its own 1ch depth encoder. The RGB
+        # control replaced that encoder with a 3ch one, so init_weights()'s
+        # pretrained transfer must know to copy the stem straight across.
+        self.depth_in_channels = 3
+
+        print_log(
+            '[DualResNetV1c18LateFusionRGB] Depth encoder: 3ch RGB input, '
+            f'{"pretrained (RGB ckpt)" if self.depth_pretrained else "random"} '
+            'init (ablation: capacity control without depth geometry).',
+            logger='current')
+
+    def forward(self, x: torch.Tensor):
+        """
+        Args:
+            x: (B, 3, H, W) — RGB only (depth 채널 없음)
+        Returns:
+            Tuple of depth-injected feature maps.
+        """
+        rgb   = x[:, :3]   # (B, 3, H, W)
+        depth = x[:, :3]   # (B, 3, H, W) — same RGB fed to depth encoder
+
+        depth_feats = self.depth_backbone(depth)
+
+        if self.deep_stem:
+            rgb = self.stem(rgb)
+        else:
+            rgb = self.relu(self.norm1(self.conv1(rgb)))
+        rgb = self.maxpool(rgb)
+
+        outs = []
+        for i, layer_name in enumerate(self.res_layers):
+            res_layer = getattr(self, layer_name)
+            rgb = res_layer(rgb)
+            rgb = self.fusions[i](rgb, depth_feats[i])
             if i in self.out_indices:
                 outs.append(rgb)
 

@@ -6,6 +6,13 @@ def test_paper_recipe_values_are_frozen():
     assert r.data.size == (512, 512)
     assert r.data.keep_ratio is False
     assert r.runtime.batch_size == 16
+    # The paper's runs used a different worker count for training than for
+    # evaluation, and that is load-bearing rather than a performance knob:
+    # the shuffled control arms draw a permutation per sample inside the
+    # worker processes, so the count decides the evaluated input. See
+    # chamnet/config/builder.py::_dataloader.
+    assert r.runtime.num_workers == 8
+    assert r.runtime.num_workers_eval == 4
     assert r.optim.lr == 2.0e-4
     assert r.schedule.max_iters == 3760
     assert r.schedule.warmup['iters'] == 124

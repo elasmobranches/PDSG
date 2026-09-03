@@ -3,165 +3,115 @@ import torch
 
 import chamnet
 from chamnet.config.builder import build_config
+from chamnet.config.combos import VALID
 from chamnet.config.schema import load_recipe
 from mmseg.registry import DATASETS, MODELS
 
 chamnet.register_all()
 
 
-def test_bl_builds_and_backprops(synthetic_data):
-    cfg = build_config(method='bl', backbone='resnet18',
+ALL_COMBINATIONS = [
+    # convnext_atto is the one backbone whose classes call timm.create_model
+    # with pretrained=True inside __init__, so merely *building* one downloads
+    # a checkpoint. Marked rather than skipped, per the `network` marker's note
+    # in pyproject.toml -- deselect with -m "not network" and the record of
+    # what went unchecked is explicit.
+    pytest.param(method, backbone, ablation,
+                 marks=[pytest.mark.network] if backbone == 'convnext_atto' else [])
+    for method, ablation in sorted(VALID, key=str)
+    for backbone in ['resnet18', 'mit_b0', 'segnext_t', 'convnext_atto']
+]
+
+# Where each method keeps the modules that consume depth. A forward and
+# backward pass has to put gradient on them, or the run is training an RGB
+# model with a decorative second encoder attached.
+DEPTH_MODULES = {
+    'bl': (),
+    'ef': (),                             # one widened stem; checked separately
+    'sd': ('depth_branch', 'fusions'),
+    'hd': ('depth_backbone', 'fusions'),
+}
+
+
+@pytest.mark.parametrize('method,backbone,ablation', ALL_COMBINATIONS)
+def test_every_combination_builds_and_backprops(method, backbone, ablation,
+                                                synthetic_data):
+    """Every combination `chamnet list` advertises must build and train.
+
+    This is the broad half of the smoke coverage: all 36 of them, on real
+    synthetic data, through the real pipeline. It replaces four
+    method-specific tests (bl/sd/ef/hd on resnet18) and keeps every check they
+    made, generalised so it applies to each arm rather than to one:
+
+    * The pipeline actually runs. `dataset[0]` goes through
+      LoadImageFromFile -> LoadDepthAsChannel (where the arm has depth) ->
+      LoadAnnotations -> Resize -> ChamNetOnlineAugmentation ->
+      ShuffleDepthChannel (where the arm shuffles) -> PackSegInputs. A config
+      whose pipeline and backbone disagree about width is a hard error on the
+      first convolution -- which is exactly what `method='ef'` produced before
+      the 4-channel backbone classes existed, and what `ablation='rgb'` would
+      produce if its depth loader were not removed.
+    * The depth `.npy` round trip. A 4-channel arm's item must come back with
+      four channels and float32 dtype (the concatenation upcasts the uint8
+      RGB); an all-uint8 result would mean LoadDepthAsChannel silently
+      no-opped. A 3-channel arm's must stay uint8.
+    * Forward, 8 output classes, backward.
+    * Gradient reaches the depth pathway. Depth features that are computed and
+      then dropped -- an encoder never wired into the gates, a stem widened but
+      disconnected -- pass a forward test and fail here. What counts as "the
+      depth pathway" differs per method (DEPTH_MODULES, and EF's widened stem
+      below), so it is looked up rather than assumed.
+
+    A forward pass is also the only check on the two streams' stage
+    resolutions lining up: SD's `depth_stage_strides`, HD's second full
+    backbone, and every ablation's inherited version of both. Get any of them
+    wrong and CrossModalGating's `rgb + d_proj * gate` raises a shape mismatch
+    here. The fixture-equivalence tests compare dicts and cannot see it.
+    """
+    cfg = build_config(method=method, backbone=backbone, ablation=ablation,
                        recipe='quick', data_root=str(synthetic_data), seed=31)
-    # cfg.default_scope='mmseg' (set by build_config) is what `Runner.from_cfg`
-    # reads to establish this scope for `chamnet train`/`chamnet test`. This
-    # test builds the model directly, bypassing Runner, so nothing reads that
-    # key on its own — without an active scope, mmengine's BaseModel.__init__
-    # builds the nested `data_preprocessor` via mmengine's *root* MODELS
-    # registry, which can't resolve mmseg-only types like SegDataPreProcessor.
-    # Scope the call explicitly instead of mutating global state at import
-    # time (chamnet.register_all() must stay side-effect-free for callers).
+    size = tuple(load_recipe('quick').data.size)
+    in_channels = len(cfg.model['data_preprocessor']['mean'])
+
+    # `chamnet.scoped(cfg)` rather than a global scope: `Runner.from_cfg` reads
+    # cfg.default_scope itself, but building a model or dataset directly
+    # bypasses Runner and mmengine then resolves nested types (the model's
+    # data_preprocessor, an mmseg-only pipeline step) against its own root
+    # registry and fails. Scoping at the call site keeps `register_all()`
+    # side-effect-free for anyone importing chamnet alongside another
+    # mmengine-based library -- see that function's docstring.
+    with chamnet.scoped(cfg):
+        dataset = DATASETS.build(cfg.train_dataloader['dataset'])
+        item = dataset[0]
+    assert item['inputs'].shape == (in_channels, *size)
+    assert item['inputs'].dtype == (torch.float32 if in_channels == 4
+                                    else torch.uint8)
+
     with chamnet.scoped(cfg):
         model = MODELS.build(cfg.model)
-    x = torch.randn(2, 3, 64, 128)
-    feats = model.backbone(x)
+    feats = model.backbone(torch.randn(2, in_channels, 64, 128))
     logits = model.decode_head(feats)
     assert logits.shape[1] == 8
     logits.sum().backward()
     assert any(p.grad is not None for p in model.backbone.parameters())
 
+    for name in DEPTH_MODULES[method]:
+        module = getattr(model.backbone, name)
+        assert any(p.grad is not None for p in module.parameters()), (
+            f'{method}/{backbone}/{ablation}: no gradient reached '
+            f'backbone.{name}')
 
-def test_sd_builds_backprops_and_round_trips_depth(synthetic_data):
-    """SD (Dual, shallow depth-branch) coverage: the depth .npy round trip
-    through LoadDepthAsChannel/PackSegInputs, and a real forward+backward
-    pass through DualResNetV1c18. This is the only test that builds a real
-    4-channel input against the ported SD classes — before this, they had
-    zero in-repo forward-pass coverage; tools/replay.py's checkpoint replay
-    is a one-off verification artifact run against real data on the GPU
-    wrapper, not a test that runs in this suite.
-
-    A forward pass here is itself a meaningful check on `_sd_stem`'s
-    `depth_stage_strides` derivation: get that wrong (e.g. leave
-    DualResNetV1c18's dilated-backbone default `(2, 1, 1)` instead of this
-    project's non-dilated `(2, 2, 2)`) and CrossModalGating's
-    `rgb + d_proj * gate` raises a shape mismatch the moment the RGB and
-    depth streams' spatial sizes disagree at stage 2 or 3 — there's no way
-    to silently get the gate shapes wrong and still have this pass.
-    """
-    cfg = build_config(method='sd', backbone='resnet18',
-                       recipe='quick', data_root=str(synthetic_data), seed=31)
-    size = tuple(load_recipe('quick').data.size)
-
-    with chamnet.scoped(cfg):
-        dataset = DATASETS.build(cfg.train_dataloader['dataset'])
-        item = dataset[0]
-
-    inputs = item['inputs']
-    # 4 channels: 3 RGB + 1 depth, appended by LoadDepthAsChannel. The
-    # concatenation upcasts the whole array to the depth channel's float32
-    # (contrast BL's uint8 RGB-only inputs, asserted below) — an all-uint8
-    # result here would itself mean LoadDepthAsChannel silently no-opped.
-    assert inputs.shape == (4, *size)
-    assert inputs.dtype == torch.float32
-
-    with chamnet.scoped(cfg):
-        model = MODELS.build(cfg.model)
-    x = torch.randn(2, 4, 64, 128)
-    feats = model.backbone(x)
-    logits = model.decode_head(feats)
-    assert logits.shape[1] == 8
-    logits.sum().backward()
-    # Both streams must receive gradient: the RGB backbone (as BL's test
-    # above already checks) *and* the depth branch + fusion gates, which BL
-    # has none of. A depth path that forward()s fine but was never actually
-    # wired into the computation graph (e.g. depth_branch computed and
-    # discarded) would still pass BL-style coverage while training nothing
-    # on the depth side.
-    assert any(p.grad is not None for p in model.backbone.depth_branch.parameters())
-    assert any(p.grad is not None for p in model.backbone.fusions.parameters())
-
-
-def test_ef_builds_backprops_and_round_trips_four_channel_input(synthetic_data):
-    """EF (early fusion) coverage: one encoder, four input channels.
-
-    Where SD and HD send depth down a second encoder, EF concatenates it onto
-    the RGB tensor and hands the whole thing to a single backbone whose stem
-    conv was widened by one input channel. That makes the pipeline's output
-    width and the backbone's input width the same number, and a mismatch
-    between them is a hard RuntimeError on the very first conv — which is
-    exactly what `build_config(method='ef', ...)` used to produce before the
-    4-channel backbone classes existed, since it emitted a plain 3-channel
-    `ResNetV1c` for a 4-channel pipeline. A dict-comparison test cannot see
-    that; only running a real tensor through can.
-
-    So this builds the dataset the config describes, takes a real item
-    through LoadDepthAsChannel/PackSegInputs, and separately runs a forward
-    and backward pass. The gradient check is the part that would catch a stem
-    that was widened but left disconnected: the 4th input channel's weights
-    have to receive gradient like any other, and a stem conv that quietly
-    stayed 3-channel would have failed the forward pass above it.
-    """
-    cfg = build_config(method='ef', backbone='resnet18',
-                       recipe='quick', data_root=str(synthetic_data), seed=31)
-    size = tuple(load_recipe('quick').data.size)
-
-    with chamnet.scoped(cfg):
-        dataset = DATASETS.build(cfg.train_dataloader['dataset'])
-        item = dataset[0]
-    assert item['inputs'].shape == (4, *size)
-    assert item['inputs'].dtype == torch.float32
-
-    with chamnet.scoped(cfg):
-        model = MODELS.build(cfg.model)
-    stem_conv = model.backbone.stem[0]
-    assert stem_conv.in_channels == 4
-
-    x = torch.randn(2, 4, 64, 128)
-    feats = model.backbone(x)
-    logits = model.decode_head(feats)
-    assert logits.shape[1] == 8
-    logits.sum().backward()
-    assert stem_conv.weight.grad is not None
-    assert stem_conv.weight.grad[:, 3].abs().sum() > 0, (
-        'the depth input channel received no gradient — it is not actually '
-        'wired into the forward pass')
-
-
-def test_hd_builds_and_backprops_through_both_encoders(synthetic_data):
-    """HD (Dual+, heavy depth-branch) forward/backward coverage.
-
-    HD replaces SD's small depthwise-separable depth branch with a second
-    full copy of the RGB architecture, so the two streams' stage resolutions
-    have to line up on their own rather than by construction. Wrong strides,
-    a wrong stage-dim table, or a dropped stem key that turned out not to be
-    the class default would all show up as a shape mismatch the first time
-    CrossModalGating computes `rgb + d_proj * gate`. Only a real forward pass
-    catches that; the fixture-equivalence tests compare dicts and would not.
-
-    Backbones: resnet18 for the stride/dilation geometry, and mit_b0 because
-    its config is the one whose backbone dict omits keys BL states explicitly
-    (see HD_STEM_DELTA) — if any of those omissions were not the class
-    default, this is where it would surface. segnext_t and convnext_atto are
-    left out because building the ConvNeXt one downloads timm weights inside
-    __init__; their depth-encoder behaviour is covered in
-    tests/test_ablation_semantics.py.
-    """
-    for backbone in ('resnet18', 'mit_b0'):
-        cfg = build_config(method='hd', backbone=backbone, recipe='quick',
-                           data_root=str(synthetic_data), seed=31)
-        with chamnet.scoped(cfg):
-            model = MODELS.build(cfg.model)
-        x = torch.randn(2, 4, 64, 128)
-        feats = model.backbone(x)
-        logits = model.decode_head(feats)
-        assert logits.shape[1] == 8, backbone
-        logits.sum().backward()
-        # The depth encoder is a whole second backbone; if it were computed
-        # and then discarded (or never wired into the gates), the forward
-        # pass would still succeed and only the gradient check would notice.
-        assert any(p.grad is not None
-                   for p in model.backbone.depth_backbone.parameters()), backbone
-        assert any(p.grad is not None
-                   for p in model.backbone.fusions.parameters()), backbone
+    if method == 'ef':
+        # Early fusion has no second encoder: its entire use of depth is the
+        # stem conv's fourth input plane, so that plane is the thing that must
+        # receive gradient. Located by width rather than by a path table --
+        # "exactly one 4-input-channel module" is what early fusion means.
+        widened = [m for m in model.backbone.modules()
+                   if getattr(m, 'in_channels', None) == 4]
+        assert len(widened) == 1, widened
+        assert widened[0].weight.grad[:, 3].abs().sum() > 0, (
+            'the depth input channel received no gradient -- it is not '
+            'actually wired into the forward pass')
 
 
 def test_dataset_loads_synthetic_image_and_mask(synthetic_data):
@@ -176,7 +126,8 @@ def test_dataset_loads_synthetic_image_and_mask(synthetic_data):
     Scope note: 'bl' is RGB-only (data_channels=3 in build_config), so its
     pipeline has no LoadDepthAsChannel step — this test covers the image and
     mask paths only. Depth (.npy) round-trip coverage is
-    `test_sd_builds_backprops_and_round_trips_depth`, above.
+    `test_every_combination_builds_and_backprops` above, on each of the 32
+    combinations whose pipeline loads four channels.
     """
     cfg = build_config(method='bl', backbone='resnet18',
                        recipe='quick', data_root=str(synthetic_data), seed=31)

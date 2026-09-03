@@ -92,6 +92,35 @@ HD_TYPE = {
     'convnext_atto': 'DualConvNeXtAttoPlusSerial',
 }
 
+# HD's two class-swapping control arms. `nogate` and `shuffled` reuse HD_TYPE
+# (a constructor flag and a pipeline step respectively); `bigate` and `rgb`
+# are different classes, read straight off the paper's own
+# tests/fixtures/paper/hd-bigate_*.merged.py and hd-rgb_*.merged.py, whose
+# backbone dicts are HD's with nothing but `type` changed.
+#
+# HD_BIGATE_TYPE — CMG's additive, depth-only gate replaced by a
+#   bidirectional multiplicative one (rgb*g(rgb) + d_proj*g(depth)). Same
+#   dual-encoder structure, same depth init, same forward flow, so the
+#   comparison isolates the fusion mechanism.
+# HD_RGB_TYPE — the capacity control: the depth-slot encoder is rebuilt to
+#   take 3 channels and is fed the RGB image, so the arm keeps HD's parameter
+#   count and HD's ImageNet initialisation while carrying no geometry. Its
+#   input is 3-channel and its pipeline has no depth loader at all -- see
+#   `build_config`.
+HD_BIGATE_TYPE = {
+    'resnet18': 'DualResNetV1c18BiGate',
+    'mit_b0': 'DualMiTB0BiGate',
+    'segnext_t': 'DualMSCANBiGate',
+    'convnext_atto': 'DualConvNeXtAttoPlusBiGate',
+}
+
+HD_RGB_TYPE = {
+    'resnet18': 'DualResNetV1c18LateFusionRGB',
+    'mit_b0': 'DualMiTB0LateFusionRGB',
+    'segnext_t': 'DualMSCANLateFusionRGB',
+    'convnext_atto': 'DualConvNeXtAttoPlusSerialRGB',
+}
+
 # How each HD backbone dict differs from the BL dict for the same backbone,
 # read straight off tests/fixtures/paper/hd_*.merged.py. `drop` keys are
 # removed from the BL stem, `add` keys are merged in; the builder then sets

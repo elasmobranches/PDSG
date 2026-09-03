@@ -2,11 +2,20 @@
 
 VALID: set[tuple[str, str | None]] = {
     ('bl', None), ('ef', None), ('sd', None), ('hd', None),
-    # 후속 작업에서 추가:
-    # ('ef', 'shuffled'),
-    # ('hd', 'shuffled'), ('hd', 'rgb'), ('hd', 'nogate'), ('hd', 'bigate'),
+    # HD's four control arms, plus early fusion's depth-structure control.
+    # ('ef', 'shuffled') exists and ('sd', 'shuffled') does not because the
+    # paper ran the shuffled control on the two arms it argues about, not on
+    # all four.
+    ('ef', 'shuffled'),
+    ('hd', 'shuffled'), ('hd', 'rgb'), ('hd', 'nogate'), ('hd', 'bigate'),
 }
 
+# Why each *invalid* combination is invalid, in the words a user sees. Every
+# (method, ablation) pair outside VALID that a user could plausibly type has an
+# entry here -- with four methods and four ablations there are twenty pairs,
+# nine valid and eleven listed below, so nothing a `--ablation` choice can
+# produce falls through to the bare "unknown combination" fallback. That
+# fallback is left in place for a genuinely unrecognised ablation name.
 _WHY = {
     ('bl', 'shuffled'): 'BL has no depth input to shuffle',
     ('bl', 'rgb'):      'BL has no depth-slot encoder',
@@ -21,13 +30,6 @@ _WHY = {
     ('sd', 'rgb'):      'not run in the paper',
     ('sd', 'nogate'):   'not run in the paper',
     ('sd', 'bigate'):   'not run in the paper',
-    # Run in the paper, but their backbones are not part of this release yet.
-    # The wording is what a user sees, so it says what is true of the package
-    # rather than describing the work queue that will change it.
-    ('hd', 'shuffled'): 'not implemented in this release yet',
-    ('hd', 'rgb'):      'not implemented in this release yet',
-    ('hd', 'nogate'):   'not implemented in this release yet',
-    ('hd', 'bigate'):   'not implemented in this release yet',
 }
 
 

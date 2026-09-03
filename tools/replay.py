@@ -6,8 +6,10 @@
 사용법과 알려진 한계는 verification/README.md 를 먼저 읽을 것 — 특히 이
 스크립트가 **의도적으로 exit 1** 하는 두 이유(SegNeXt-T LightHamHead 의
 rand_init=True, 그리고 bl/resnet18 Pillar 가 소수점 2자리 반올림 경계인
-79.995 에 걸쳐 있는 것)와, --all 이 아직 이식되지 않은 ablation 조합에서
-실패하는 이유.
+79.995 에 걸쳐 있는 것).
+
+`--all` 은 WORK 의 9개 arm × 4 백본 = 36행 전부를 재생한다. 인자 없이 돌리면
+ablation 없는 4개 method 만 (16행) 돈다.
 """
 import argparse
 import contextlib
@@ -77,24 +79,54 @@ class IoUMetricWithPerClass(IoUMetric):
         return metrics
 
 
-WORK = {  # (method, ablation) -> 원본 work_dir 과 flow 이름
-    ('bl', None):        ('work_dirs_v12+_512bc_pretrained', 'baseline'),
-    ('ef', None):        ('work_dirs_v12+_512bc_pretrained', 'proposed'),
-    ('sd', None):        ('work_dirs_v12+_512bc_pretrained', 'dual'),
-    ('hd', None):        ('work_dirs_v12+_512bc_pretrained', 'dual_plus'),
-    ('hd', 'nogate'):    ('work_dirs_v12+_512_gate_ablation', 'dual_plus_nogate'),
-    ('hd', 'bigate'):    ('work_dirs_v12+_512_gate_ablation', 'dual_plus_bigate'),
-    ('hd', 'shuffled'):  ('work_dirs_v12+_512_controls', 'dual_plus_shuffled'),
-    ('hd', 'rgb'):       ('work_dirs_v12+_512_controls', 'dual_plus_rgb'),
-    ('ef', 'shuffled'):  ('work_dirs_v12+_512_ef_controls', 'proposed_shuffled'),
+# (method, ablation) -> (flow, work_dir for resnet18/mit_b0,
+#                                work_dir for segnext_t/convnext_atto)
+#
+# Every arm was swept twice: first on resnet18 + mit_b0, then -- as a separate,
+# later sweep -- on segnext_t + convnext_atto, into a differently named
+# directory. The second column is written out per entry rather than derived by
+# appending '_ext', because the naming is not regular and the irregularities
+# are silent: `hd/rgb`'s extended sweep went to `..._controls_rgb_ext` (not
+# `..._controls_ext`), and `ef/shuffled`'s went to `..._controls_ext` -- the
+# *hd* controls directory -- rather than to an `..._ef_controls_ext` that does
+# not exist. A rule like `wd + '_ext'` gets the second of those wrong and fails
+# with a plain FileNotFoundError that reads like missing data rather than a
+# wrong path. Verified against the directory listing on the training server.
+WORK = {
+    ('bl', None):       ('baseline',
+                         'work_dirs_v12+_512bc_pretrained',
+                         'work_dirs_v12+_512bc_pretrained'),
+    ('ef', None):       ('proposed',
+                         'work_dirs_v12+_512bc_pretrained',
+                         'work_dirs_v12+_512bc_pretrained'),
+    ('sd', None):       ('dual',
+                         'work_dirs_v12+_512bc_pretrained',
+                         'work_dirs_v12+_512bc_pretrained'),
+    ('hd', None):       ('dual_plus',
+                         'work_dirs_v12+_512bc_pretrained',
+                         'work_dirs_v12+_512bc_pretrained'),
+    ('hd', 'nogate'):   ('dual_plus_nogate',
+                         'work_dirs_v12+_512_gate_ablation',
+                         'work_dirs_v12+_512_gate_ablation_ext'),
+    ('hd', 'bigate'):   ('dual_plus_bigate',
+                         'work_dirs_v12+_512_gate_ablation',
+                         'work_dirs_v12+_512_gate_ablation_ext'),
+    ('hd', 'shuffled'): ('dual_plus_shuffled',
+                         'work_dirs_v12+_512_controls',
+                         'work_dirs_v12+_512_controls_ext'),
+    ('hd', 'rgb'):      ('dual_plus_rgb',
+                         'work_dirs_v12+_512_controls',
+                         'work_dirs_v12+_512_controls_rgb_ext'),
+    ('ef', 'shuffled'): ('proposed_shuffled',
+                         'work_dirs_v12+_512_ef_controls',
+                         'work_dirs_v12+_512_controls_ext'),
 }
-# Every `hd`/`ef` ablation above is not ported into chamnet yet -- those
-# entries have no registered backbone at all. `--methods` therefore defaults
-# to only the four training methods that are implemented; `--all` still means
-# "every WORK entry" for when the ablations land, so it will fail past the
-# four until then -- see verification/README.md.
+# `--methods` names the training methods to replay without ablations, which is
+# the quick check; `--all` replays every WORK entry -- all nine arms on all four
+# backbones, 36 rows -- and is what verification/replay.csv is generated with.
 IMPLEMENTED_METHODS = ('bl', 'ef', 'sd', 'hd')
-EXT = {'segnext_t': '_ext', 'convnext_atto': '_ext'}        # 확장 sweep 접미사
+EXT_BACKBONES = ('segnext_t', 'convnext_atto')      # 확장 sweep 백본
+BACKBONES = ('resnet18', 'mit_b0', 'segnext_t', 'convnext_atto')
 
 
 def _use_original_val_test_layout(dataloader_cfg):
@@ -130,11 +162,8 @@ def _use_original_val_test_layout(dataloader_cfg):
 
 
 def replay(data_root, src, method, backbone, ablation, seed=37):
-    wd, flow = WORK[(method, ablation)]
-    if ablation is not None and backbone in EXT:
-        wd += EXT[backbone]
-        if ablation == 'rgb':
-            wd = 'work_dirs_v12+_512_controls_rgb_ext'
+    flow, wd, wd_ext = WORK[(method, ablation)]
+    wd = wd_ext if backbone in EXT_BACKBONES else wd
     run = f'{src}/{wd}/{seed}/chamnet_{flow}_{backbone}'
     matches = glob.glob(f'{run}/best_mIoU_iter_*.pth')
     if not matches:
@@ -190,10 +219,21 @@ if __name__ == '__main__':
     a = ap.parse_args()
     chamnet.register_all()
 
+    # WORK is the recorded side and combos.VALID is the shipped side; if they
+    # ever disagree, --all silently stops covering an arm the package still
+    # advertises (or asks for a checkpoint that was never trained). Neither
+    # failure announces itself, so check rather than assume.
+    from chamnet.config.combos import VALID
+    if set(WORK) != VALID:
+        raise SystemExit(
+            f'WORK and chamnet.config.combos.VALID disagree: '
+            f'only in WORK {sorted(set(WORK) - VALID, key=str)}, '
+            f'only in VALID {sorted(VALID - set(WORK), key=str)}')
+
     combos = list(WORK) if a.all else [(m, None) for m in a.methods.split(',')]
     rows = [replay(a.data, a.src, m, bb, ab)
             for m, ab in combos
-            for bb in ['resnet18', 'mit_b0', 'segnext_t', 'convnext_atto']]
+            for bb in BACKBONES]
     out_dir = os.path.dirname(a.out)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
@@ -211,13 +251,21 @@ if __name__ == '__main__':
     # have let that pass unnoticed.
     #
     # The gate stays at 1e-3 (i.e. "equal at the 2 decimals results_v8.csv
-    # stores") deliberately. Two row classes are expected to fail it and are
+    # stores") deliberately. Three row classes are expected to fail it and are
     # documented in verification/README.md rather than tolerated here:
-    # SegNeXt-T's RNG-dependent decode head, and bl/resnet18's Pillar, whose
-    # raw value straddles the 79.995 rounding boundary so the second decimal
-    # flips between runs while the quantity itself moves by ~6 pixels in
-    # 1.46M -- which also makes the printed pass count 8/12 or 9/12 depending
-    # on the run. Widening the gate to absorb either would also stop it
+    #
+    #   * SegNeXt-T's RNG-dependent decode head -- one row per arm, 9 of the 36
+    #     under --all.
+    #   * the shuffled arms, which draw their depth permutation at test time --
+    #     8 rows, of which 2 are SegNeXt-T rows already counted, so 6 more.
+    #   * bl/resnet18's Pillar, whose raw value straddles the 79.995 rounding
+    #     boundary so the second decimal flips between runs while the quantity
+    #     itself moves by ~6 pixels in 1.46M.
+    #
+    # That is 15 rows that do not match plus one coin flip, so the printed pass
+    # count under --all is 20/36 or 21/36, less one for each row the ~0.01 GPU
+    # flutter happens to land on (it took two in the committed run, hence
+    # 19/36). Widening the gate to absorb any of this would also stop it
     # catching a real regression of the same size.
     bad = [r for r in rows
            if abs(r['replay_mIoU'] - r['recorded_mIoU']) > 1e-3

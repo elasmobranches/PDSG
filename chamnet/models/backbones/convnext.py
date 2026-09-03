@@ -51,7 +51,7 @@ from mmengine.model import BaseModule
 
 from mmseg.registry import MODELS
 
-from chamnet.models.fusion import CrossModalGating, DepthBranch
+from chamnet.models.fusion import BiGateGating, CrossModalGating, DepthBranch
 
 
 @MODELS.register_module()
@@ -177,7 +177,7 @@ class DualConvNeXtAttoPlusSerial(BaseModule):
     STAGE_DIMS = (40, 80, 160, 320)
 
     def __init__(self, fusion_reduction: int = 4, depth_pretrained: bool = False,
-                 init_cfg=None):
+                 fusion_use_gate: bool = True, init_cfg=None):
         if timm is None:
             raise RuntimeError('timm is not installed')
         super().__init__(init_cfg=init_cfg)
@@ -220,7 +220,8 @@ class DualConvNeXtAttoPlusSerial(BaseModule):
 
         # ── Per-stage CrossModalGating ───────────────────────────────────────
         self.fusions = nn.ModuleList([
-            CrossModalGating(dim, reduction=fusion_reduction)
+            CrossModalGating(dim, reduction=fusion_reduction,
+                             use_gate=fusion_use_gate)
             for dim in self.STAGE_DIMS
         ])
 
@@ -239,6 +240,83 @@ class DualConvNeXtAttoPlusSerial(BaseModule):
         depth_feats = self.depth_backbone(depth)  # [d0, d1, d2, d3]
 
         # RGB: stem → stage_i → CMG[i] → stage_i+1 → ...
+        feat = self.stem(rgb)
+        outs = []
+        for i, stage in enumerate(self.rgb_stages):
+            feat = stage(feat)
+            feat = self.fusions[i](feat, depth_feats[i])
+            outs.append(feat)
+
+        return outs
+
+
+# ---------------------------------------------------------------------------
+# Control arms for HD (see chamnet/config/combos.py for the enabled set)
+#
+#   DualConvNeXtAttoPlusBiGate    — ported verbatim from
+#       mmsegmentation/mmseg/models/backbones/dual_convnext_bigate.py
+#   DualConvNeXtAttoPlusSerialRGB — ported verbatim from
+#       mmsegmentation/mmseg/models/backbones/dual_convnext_rgb.py
+#
+# Only the imports changed: BiGateGating comes from chamnet.models.fusion
+# (upstream it came from dual_resnet_bigate.py) and the parent class from this
+# module rather than a sibling one. No class body was modified during the move.
+# ---------------------------------------------------------------------------
+
+
+@MODELS.register_module()
+class DualConvNeXtAttoPlusBiGate(DualConvNeXtAttoPlusSerial):
+    """Replaces CMG fusion with bidirectional multiplicative channel gating."""
+
+    def __init__(self, fusion_reduction: int = 4, **kwargs):
+        super().__init__(fusion_reduction=fusion_reduction, **kwargs)
+        self.fusions = nn.ModuleList([
+            BiGateGating(dim, reduction=fusion_reduction)
+            for dim in self.STAGE_DIMS
+        ])
+        print_log(
+            '[DualConvNeXtAttoPlusBiGate] Fusion replaced with bidirectional '
+            f'multiplicative channel gating. Stage dims: {self.STAGE_DIMS}',
+            logger='current')
+
+
+@MODELS.register_module()
+class DualConvNeXtAttoPlusSerialRGB(DualConvNeXtAttoPlusSerial):
+    """Depth-slot ConvNeXt-Atto takes 3-channel RGB instead of 1-channel depth."""
+
+    def __init__(self, fusion_reduction: int = 4, depth_pretrained: bool = False,
+                 fusion_use_gate: bool = True, init_cfg=None):
+        super().__init__(fusion_reduction=fusion_reduction,
+                         depth_pretrained=depth_pretrained,
+                         fusion_use_gate=fusion_use_gate, init_cfg=init_cfg)
+        # Rebuild the depth-slot encoder with a 3-channel stem. timm loads the
+        # ImageNet weights directly, with no channel adaptation needed.
+        self.depth_backbone = timm.create_model(
+            'convnext_atto',
+            features_only=True,
+            pretrained=depth_pretrained,
+            in_chans=3,
+            out_indices=(0, 1, 2, 3),
+        )
+        if depth_pretrained:
+            _n = self.depth_backbone.stem_0.weight.detach().norm().item()
+            if _n == 0:
+                raise RuntimeError(
+                    '[DualConvNeXtAttoPlusSerialRGB] depth_pretrained=True but '
+                    'the depth stem is all zeros; the pretrained load failed.')
+        print_log(
+            '[DualConvNeXtAttoPlusSerialRGB] Depth encoder: 3ch RGB input, '
+            f'{"timm pretrained" if depth_pretrained else "random"} '
+            'init (ablation: capacity control without depth geometry).',
+            logger='current')
+
+    def forward(self, x: torch.Tensor):
+        """Args: x (B, 3, H, W) — RGB only. Mirrors the parent loop."""
+        rgb = x[:, :3]
+        depth = x[:, :3]          # same RGB fed to the depth-slot encoder
+
+        depth_feats = self.depth_backbone(depth)
+
         feat = self.stem(rgb)
         outs = []
         for i, stage in enumerate(self.rgb_stages):

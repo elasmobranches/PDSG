@@ -84,10 +84,11 @@ def _timm_convnext_depth_encoder(pretrained):
                              out_indices=(0, 1, 2, 3))
 
 
-def _hd_backbone(backbone, depth_pretrained=None):
+def _hd_backbone(backbone, depth_pretrained=None, ablation=None):
     """Build just the HD backbone `build_config` emits, optionally overriding
     depth_pretrained so the same code path can be run as its own control."""
-    cfg = build_config(method='hd', backbone=backbone, recipe='paper_v13', seed=37)
+    cfg = build_config(method='hd', backbone=backbone, ablation=ablation,
+                       recipe='paper_v13', seed=37)
     stem = copy.deepcopy(cfg.model['backbone'])
     if depth_pretrained is not None:
         stem['depth_pretrained'] = depth_pretrained
@@ -401,3 +402,181 @@ def test_ef_stem_takes_four_channels_initialised_from_the_rgb_mean(backbone):
     if rgb_bias is not None:
         assert torch.equal(conv.bias.detach(), rgb_bias), (
             f'{backbone}: widening the stem lost its pretrained bias')
+
+
+# ---------------------------------------------------------------------------
+# HD's control arms: what each one actually changes about the built model.
+#
+# `tests/test_matches_paper.py` already checks that each arm's config is the
+# paper's, key for key. That is a check on the *dict*, and every mechanism below
+# is one a wrong dict cannot produce but a right dict can still fail to deliver
+# — a backbone class that accepts `fusion_use_gate` and quietly ignores it, a
+# depth-slot encoder that takes RGB but starts from the wrong weights. So these
+# look at the built modules and their parameters.
+# ---------------------------------------------------------------------------
+
+
+def _fusion_parameters(model):
+    """The parameters `build_config`'s fusion modules contribute, by name.
+
+    Selected the way the arms differ — anything under a `fusion`/`gate` name —
+    rather than by reaching into `.fusions`, so a variant that put its gate
+    somewhere else would still be counted. Measured on all four backbones: the
+    only matching root is `fusions`, i.e. nothing unrelated is swept in.
+    """
+    return {n: p for n, p in model.named_parameters()
+            if 'fusion' in n or 'gate' in n}
+
+
+@pytest.mark.parametrize('backbone', BACKBONES)
+def test_gate_designs_differ_by_exactly_one_channel_gate(backbone):
+    """NOGATE, CMG and BIGATE must be an arithmetic progression in fusion size.
+
+    The three arms are meant to be the same fusion block with zero, one and two
+    channel gates on it: NOGATE injects `rgb + d_proj`, CMG weights the depth
+    term by a gate on depth, BIGATE adds a second gate on RGB. If that is what
+    they are, then `CMG - NOGATE` and `BIGATE - CMG` are both exactly one gate
+    MLP and therefore equal — a property, not a definition, so it was measured
+    before being asserted. It holds on all four backbones:
+
+        backbone       NOGATE     CMG     BIGATE    one gate
+        resnet18       350,080  611,200   872,320    261,120
+        mit_b0          97,280  169,472   241,664     72,192
+        segnext_t       97,280  169,472   241,664     72,192
+        convnext_atto  137,200  239,200   341,200    102,000
+
+    Equality alone would not prove the difference is a *gate*, so the expected
+    size is also recomputed from each stage's own width: a gate is
+    `Linear(2C -> mid) + Linear(mid -> C)`, bias-free, with `mid = max(C//4,
+    8)` at the fusion_reduction=4 every paper config uses — i.e. `3*C*mid` per
+    stage. Both halves of the progression must equal that sum.
+
+    What this catches that nothing else does: `fusion_use_gate` reaching a
+    backbone class that accepts the argument and never passes it on. Two of the
+    four HD classes (MSCAN, ConvNeXt) genuinely lacked that plumbing until this
+    release; with the config key emitted and ignored, NOGATE would build a full
+    CMG, `test_hd_nogate_matches_paper` would still pass, and the arm would be
+    comparing HD against itself.
+    """
+    counts, dims = {}, None
+    for ablation in ('nogate', None, 'bigate'):
+        model = _hd_backbone(backbone, ablation=ablation)
+        counts[ablation] = sum(p.numel() for p in _fusion_parameters(model).values())
+        if ablation is None:
+            # Stage widths read off the module every arm shares — the depth
+            # projection — rather than restated from a table here.
+            dims = [f.depth_proj[0].in_channels for f in model.fusions]
+
+    one_gate = sum(2 * c * max(c // 4, 8) + max(c // 4, 8) * c for c in dims)
+    no, cmg, bi = counts['nogate'], counts[None], counts['bigate']
+    assert cmg - no == bi - cmg > 0, (
+        f'{backbone}: fusion parameters {no}/{cmg}/{bi} (nogate/cmg/bigate) are '
+        f'not an arithmetic progression: {cmg - no} != {bi - cmg}')
+    assert cmg - no == one_gate, (
+        f'{backbone}: the step between gate designs is {cmg - no} parameters, '
+        f'but one channel-gate MLP over stage widths {dims} is {one_gate}. '
+        'The arms differ by something other than a gate.')
+
+
+@pytest.mark.parametrize('backbone', BACKBONES)
+def test_hd_nogate_builds_no_gate_and_injects_depth_unweighted(backbone):
+    """`fusion_use_gate=False` must remove the gate, not set it to 1.
+
+    Observed on the built module: every fusion reports `use_gate=False` and has
+    no gate submodule at all, and its output is exactly `rgb + depth_proj(d)`
+    — recomputed here from the module's own projection, so a gate that had been
+    pinned to some constant would show up as a mismatch rather than passing as
+    "close enough".
+    """
+    model = _hd_backbone(backbone, ablation='nogate')
+    for i, fusion in enumerate(model.fusions):
+        assert fusion.use_gate is False, i
+        assert not hasattr(fusion, 'gate'), f'stage {i} still built a gate MLP'
+
+    fusion = model.fusions[0].eval()
+    channels = fusion.depth_proj[0].in_channels
+    rgb = torch.randn(2, channels, 8, 8)
+    depth = torch.randn(2, channels, 8, 8)
+    with torch.no_grad():
+        assert torch.equal(fusion(rgb, depth), rgb + fusion.depth_proj(depth))
+
+
+@pytest.mark.parametrize('backbone', BACKBONES)
+def test_hd_bigate_gates_the_rgb_stream_as_well_as_the_depth_stream(backbone):
+    """BIGATE's whole content is that the RGB term is gated too.
+
+    CMG is `rgb + d_proj*g(depth)`: the RGB path is untouched, which is the
+    asymmetry the robustness argument rests on. BIGATE is
+    `rgb*g(rgb) + d_proj*g(depth)`. Swapping the class without that second gate
+    being wired into the forward pass would leave a module that has the extra
+    parameters (so the arithmetic test above still passes) and never uses them.
+    So this checks the gradient: after a backward through the fusion, the RGB
+    gate must have received one, and plain HD must have no such module at all.
+    """
+    from chamnet.models.fusion import BiGateGating
+
+    model = _hd_backbone(backbone, ablation='bigate')
+    assert all(isinstance(f, BiGateGating) for f in model.fusions)
+    assert not any('gate_rgb' in n for n in dict(
+        _hd_backbone(backbone).named_parameters())), (
+        'precondition: plain HD has no RGB-side gate to compare against')
+
+    fusion = model.fusions[0]
+    channels = fusion.depth_proj[0].in_channels
+    fusion(torch.randn(2, channels, 8, 8),
+           torch.randn(2, channels, 8, 8)).sum().backward()
+    assert all(p.grad is not None and p.grad.abs().sum() > 0
+               for p in fusion.gate_rgb.parameters()), (
+        f'{backbone}: BiGate built an RGB gate that the forward pass ignores')
+
+
+@pytest.mark.parametrize('backbone', BACKBONES)
+def test_hd_rgb_depth_slot_takes_three_channels_from_the_unaveraged_filter(backbone):
+    """The capacity control's depth-slot encoder is an RGB encoder.
+
+    Two things have to be true, and neither is visible in the config. The
+    encoder in the depth slot must take three input channels — it is fed the
+    RGB image — and, because the arm controls for HD's initialisation as well
+    as its capacity (`depth_pretrained` stays True), it must start from the
+    pretrained stem *unmodified*. That is the opposite of HD's own rule, which
+    averages the three RGB filters down to one for a 1-channel depth map; a
+    3-channel encoder needs no adaptation, and averaging it would both change
+    the weights and be the wrong shape.
+
+    This is the check that makes the production `load_rgb_into_depth_encoder`
+    behaviour load-bearing: the earlier version refused any depth encoder whose
+    first conv was not 1-channel, so it could not initialise this arm at all.
+    """
+    model = _hd_backbone(backbone, ablation='rgb')
+
+    if LOADS_AT[backbone] == 'constructor':
+        depth_stem = model.depth_backbone.stem_0
+        assert depth_stem.in_channels == 3
+        reference = _timm_convnext_depth_encoder(True)  # 1ch, for contrast
+        assert reference.stem_0.weight.shape[1] == 1
+        import timm
+        rgb_reference = timm.create_model('convnext_atto', features_only=True,
+                                          pretrained=True, in_chans=3,
+                                          out_indices=(0, 1, 2, 3))
+        assert torch.equal(depth_stem.weight, rgb_reference.stem_0.weight), (
+            'the depth-slot encoder is not timm\'s pretrained 3-channel stem')
+        return
+
+    from mmengine.runner.checkpoint import _load_checkpoint
+
+    key = HD_FIRST_CONV_KEY[backbone]
+    model.init_weights()
+    checkpoint = _load_checkpoint(model.init_cfg['checkpoint'], map_location='cpu')
+    state_dict = checkpoint.get('state_dict', checkpoint)
+    rgb_filter = state_dict[key]
+
+    depth_conv = _get_by_path(model.depth_backbone, key[:-len('.weight')])
+    assert depth_conv.in_channels == 3, (
+        f'{backbone}: the depth-slot encoder still takes '
+        f'{depth_conv.in_channels} channel(s); it is meant to take the RGB image')
+    assert torch.equal(depth_conv.weight, rgb_filter), (
+        f'{backbone}: the depth-slot stem is not the pretrained RGB filter '
+        f'copied straight across (ratio to expected ~'
+        f'{(depth_conv.weight.norm() / rgb_filter.norm()).item():.4f}); a '
+        'channel-averaged copy would be HD\'s 1-channel rule applied to the '
+        'wrong arm')

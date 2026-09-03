@@ -65,6 +65,7 @@ class Schedule:
 class Runtime:
     batch_size: int
     num_workers: int
+    num_workers_eval: int
     val_interval: int
     early_stopping: dict
     save_best: str
@@ -134,7 +135,8 @@ def load_recipe(path: str | Path) -> Recipe:
         optim=Optim(o['type'], float(o['lr']), o['weight_decay'], o['clip_grad'],
                     o['paramwise'], o.get('per_backbone', {})),
         schedule=Schedule(s['max_iters'], s['warmup'], s['poly']),
-        runtime=Runtime(r['batch_size'], r['num_workers'], r['val_interval'],
-                        r['early_stopping'], r['save_best'], list(r['seeds'])),
+        runtime=Runtime(r['batch_size'], r['num_workers'], r['num_workers_eval'],
+                        r['val_interval'], r['early_stopping'], r['save_best'],
+                        list(r['seeds'])),
         hd=Hd(raw['hd']['depth_pretrained']),
     )

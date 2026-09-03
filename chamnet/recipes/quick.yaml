@@ -26,7 +26,7 @@ optim:
     convnext_atto: {weight_decay: 0.05,  paramwise: {bias: {decay_mult: 0.0}}}
 
 schedule: {max_iters: 200, warmup: {iters: 20, start_factor: 0.01}, poly: {power: 0.9, eta_min_ratio: 0.01}}
-runtime:  {batch_size: 16, num_workers: 4, val_interval: 50,
+runtime:  {batch_size: 16, num_workers: 4, num_workers_eval: 4, val_interval: 50,
            early_stopping: {monitor: mIoU, patience: 20, min_delta: 0.01},
            save_best: mIoU, seeds: [31]}
 

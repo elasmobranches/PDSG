@@ -117,17 +117,30 @@ def _assert_matches_paper(built, ref):
     default_scope, and every train/val/test pipeline *step* (modulo
     LoadDepthAsChannel's depth_suffix — see `_normalize_pipeline`).
 
-    Does NOT cover: non-pipeline dataloader fields — num_workers, batch_size,
-    data_prefix/seg_map_path, seg_map_suffix, img_suffix. The release
-    deliberately changed these: the paper's runs used num_workers=4 for
-    val/test vs. 8 for train, and val/test read
-    'masks_gray/*_mask_gray.png' where the release's own layout unifies
-    every split under 'masks/*.png' (see verification/README.md for the one
-    dataset copy where that unification turned out to be stale for a single
-    image). Comparing those fields
-    literally would fail on an intentional, documented layout change, not a
-    real divergence — what determines the paper's numbers is the model and
-    how each image moves through it, and that is checked in full.
+    Also covers the dataloaders' own settings — batch_size, num_workers,
+    persistent_workers, sampler, and the dataset type/img_suffix — on all
+    three splits. `num_workers` in particular was previously excluded as a
+    deliberate, numerically harmless change (the release emitted one value
+    for every split where the paper used 8 for train and 4 for val/test).
+    That was true until the shuffled control arms landed: they draw a fresh
+    permutation per sample inside the worker processes, so the worker count
+    decides which permutations the model is scored on, and the divergence
+    stopped being cosmetic without anything failing. It is asserted now, and
+    `_dataloader` emits the paper's per-split values — see that function and
+    verification/README.md for the measurements.
+
+    Does NOT cover: two label-path fields and the data root — val/test's
+    `data_prefix['seg_map_path']` and `seg_map_suffix`, and `data_root`. The
+    release deliberately changed those: the paper's val/test read
+    'masks_gray/*_mask_gray.png' where the release's own layout unifies every
+    split under 'masks/*.png' (see verification/README.md for the one dataset
+    copy where that unification turned out to be stale for a single image),
+    and data_root is a path the caller supplies. Comparing those literally
+    would fail on an intentional, documented layout change rather than a real
+    divergence. `data_prefix['img_path']` is *not* excused with them —
+    excluding the whole dict would drop a field that does match — so nothing
+    else about the dataloaders is left unasserted. That list used to be
+    longer, and `num_workers` is what it cost.
     """
     normalized_built, normalized_ref = _normalize_preprocessor_type(built.model, ref.model)
     assert normalized_built == normalized_ref
@@ -152,6 +165,55 @@ def _assert_matches_paper(built, ref):
         built.test_dataloader['dataset']['pipeline'],
         ref.test_dataloader['dataset']['pipeline'], '_depth.npy')
     assert built_test == ref_test
+    _assert_dataloader_settings_match(built, ref)
+
+
+def _assert_dataloader_settings_match(built, ref):
+    """Compare every dataloader field except the three data-layout ones.
+
+    Named separately from the pipeline comparison because these are the
+    fields that decide *how* the pipeline is run rather than what it does,
+    and because one of them — num_workers — spent several revisions in the
+    'deliberately different, numerically harmless' list and then stopped
+    being harmless when a per-sample random transform arrived. The lesson
+    generalises past that one key, so the loop is written the other way
+    round: every key present on either side is compared unless it is one of
+    the three the release genuinely changed, so a field added to the builder
+    or appearing in a future fixture is covered by default instead of
+    needing to be remembered.
+    """
+    # val/test read 'masks_gray/*_mask_gray.png' in the paper's own runs and
+    # 'masks/*.png' in the release's unified layout; data_root is whatever the
+    # caller passed. Only those two label-path fields are excused -- not the
+    # whole `data_prefix` dict, whose other entry, img_path, is the same on
+    # both sides and stays compared. See this function's docstring and the
+    # module header.
+    layout_fields = {'seg_map_suffix', 'data_root'}
+    for name in ('train_dataloader', 'val_dataloader', 'test_dataloader'):
+        b, r = built[name], ref[name]
+        assert set(b) == set(r), (
+            f'{name}: keys differ, built {sorted(set(b) - set(r))} / '
+            f'fixture {sorted(set(r) - set(b))}')
+        for key in sorted(b):
+            if key == 'dataset':
+                continue
+            assert b[key] == r[key], f'{name}.{key}: {b[key]!r} != {r[key]!r}'
+        bd, rd = b['dataset'], r['dataset']
+        assert set(bd) == set(rd), f'{name}.dataset: keys differ'
+        for key in sorted(bd):
+            if key == 'pipeline' or key in layout_fields:
+                continue
+            if key == 'data_prefix':
+                assert set(bd[key]) == set(rd[key]), f'{name}.dataset.data_prefix keys'
+                for pk in sorted(bd[key]):
+                    if pk == 'seg_map_path':
+                        continue
+                    assert bd[key][pk] == rd[key][pk], (
+                        f'{name}.dataset.data_prefix.{pk}: '
+                        f'{bd[key][pk]!r} != {rd[key][pk]!r}')
+                continue
+            assert bd[key] == rd[key], (
+                f'{name}.dataset.{key}: {bd[key]!r} != {rd[key]!r}')
 
 
 @pytest.mark.parametrize('backbone', BACKBONES)
@@ -180,6 +242,91 @@ def test_hd_matches_paper(backbone):
     built = build_config(method='hd', backbone=backbone,
                          recipe='paper_v13', seed=37)
     _assert_matches_paper(built, _fixture(f'hd_{backbone}'))
+
+
+# ---------------------------------------------------------------------------
+# The five control arms. Each is HD (or EF) with exactly one thing changed, and
+# the fixture is what says which thing -- so these run through the same
+# `_assert_matches_paper` as the four training methods, comparing the whole
+# config rather than the key the arm is named after. A control arm that also
+# moved the learning rate, the augmentation or the evaluator would not be a
+# control, and only a whole-config comparison can see that.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize('backbone', BACKBONES)
+def test_hd_nogate_matches_paper(backbone):
+    built = build_config(method='hd', backbone=backbone, ablation='nogate',
+                         recipe='paper_v13', seed=37)
+    _assert_matches_paper(built, _fixture(f'hd-nogate_{backbone}'))
+    assert built.model['backbone']['fusion_use_gate'] is False
+
+
+@pytest.mark.parametrize('backbone', BACKBONES)
+def test_hd_bigate_matches_paper(backbone):
+    built = build_config(method='hd', backbone=backbone, ablation='bigate',
+                         recipe='paper_v13', seed=37)
+    _assert_matches_paper(built, _fixture(f'hd-bigate_{backbone}'))
+
+
+@pytest.mark.parametrize('backbone', BACKBONES)
+def test_hd_rgb_matches_paper(backbone):
+    """The capacity control: RGB into the depth slot, and no depth read at all.
+
+    The last part is the one a reader is most likely to get wrong, so it is
+    asserted here as well as being implied by the pipeline comparison: an
+    hd-rgb config has *no* LoadDepthAsChannel step in any split and a
+    three-element mean/std. Depth is never loaded, not loaded and discarded.
+    """
+    built = build_config(method='hd', backbone=backbone, ablation='rgb',
+                         recipe='paper_v13', seed=37)
+    ref = _fixture(f'hd-rgb_{backbone}')
+    _assert_matches_paper(built, ref)
+
+    for cfg, who in ((built, 'build_config'), (ref, 'the paper fixture')):
+        assert len(cfg.model['data_preprocessor']['mean']) == 3, who
+        assert len(cfg.model['data_preprocessor']['std']) == 3, who
+        for name in ('train_dataloader', 'val_dataloader', 'test_dataloader'):
+            types = [step['type'] for step in cfg[name]['dataset']['pipeline']]
+            assert 'LoadDepthAsChannel' not in types, f'{who}: {name}'
+    # ...and the depth-slot encoder still starts from HD's initialisation, or
+    # the arm would be controlling for two things at once.
+    assert built.model['backbone']['depth_pretrained'] is True
+
+
+@pytest.mark.parametrize('backbone', BACKBONES)
+def test_hd_shuffled_matches_paper(backbone):
+    _assert_shuffled_matches_paper('hd', backbone)
+
+
+@pytest.mark.parametrize('backbone', BACKBONES)
+def test_ef_shuffled_matches_paper(backbone):
+    _assert_shuffled_matches_paper('ef', backbone)
+
+
+def _assert_shuffled_matches_paper(method, backbone):
+    """Shared body for the two shuffled arms, including where the step goes.
+
+    ShuffleDepthChannel must be in **all three** dataloader pipelines --
+    train, val and test. That is what the paper's runs did, and it is easy to
+    read the fixtures as saying otherwise: they also define a top-level
+    `val_test_pipeline` that has no shuffle step, but no dataloader refers to
+    it. Asserting the placement on both sides makes which one is authoritative
+    explicit, so a later "fix" that drops val back to unshuffled depth fails
+    here with a reason instead of just failing a dict comparison.
+    """
+    built = build_config(method=method, backbone=backbone, ablation='shuffled',
+                         recipe='paper_v13', seed=37)
+    ref = _fixture(f'{method}-shuffled_{backbone}')
+    _assert_matches_paper(built, ref)
+
+    for cfg, who in ((built, 'build_config'), (ref, 'the paper fixture')):
+        for name in ('train_dataloader', 'val_dataloader', 'test_dataloader'):
+            types = [step['type'] for step in cfg[name]['dataset']['pipeline']]
+            assert types.count('ShuffleDepthChannel') == 1, f'{who}: {name} {types}'
+            assert types.index('ShuffleDepthChannel') == len(types) - 2, (
+                f'{who}: {name} must shuffle immediately before PackSegInputs, '
+                f'got {types}')
 
 
 def test_hd_mit_b0_stem_omissions_are_mixvisiontransformer_defaults():
