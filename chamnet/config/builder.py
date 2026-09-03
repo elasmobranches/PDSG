@@ -6,8 +6,9 @@ from pathlib import Path
 
 from mmengine.config import Config
 
-from chamnet.config.backbones import (BACKBONES, HD_OPTIM_EXTRA, HD_STEM_DELTA,
-                                      HD_TYPE, NORM, SD_TYPE)
+from chamnet.config.backbones import (BACKBONES, EF_EXTRA_CHANNEL_INIT,
+                                      EF_STEM_DELTA, EF_TYPE, HD_OPTIM_EXTRA,
+                                      HD_STEM_DELTA, HD_TYPE, NORM, SD_TYPE)
 from chamnet.config.combos import validate
 from chamnet.config.schema import Recipe, load_recipe
 
@@ -106,6 +107,46 @@ def _sd_stem(backbone: str, bl_stem: dict, pretrained, stem_channels: int):
     return stem
 
 
+def _ef_stem(backbone: str, bl_stem: dict, pretrained, stem_channels: int):
+    """Build the EF (early fusion, 4-channel input) backbone stem for `backbone`.
+
+    Same shape of derivation as `_sd_stem`/`_hd_stem`: an EF backbone *is* the
+    BL backbone with its first convolution widened by one input channel, so
+    every other architecture argument is BL's verbatim. Only `type`,
+    `extra_channel_init`, `init_cfg` and the per-backbone `in_channels`
+    handling in `EF_STEM_DELTA` differ. Confirmed field-for-field against
+    tests/fixtures/paper/ef_*.merged.py, which is the truth if this ever
+    disagrees.
+
+    Unlike SD and HD, `stem_channels` here is genuinely 4 and genuinely used:
+    early fusion feeds the whole RGB-D tensor to one encoder, so the stem's
+    input width is the pipeline's output width. It is checked rather than
+    assumed for the same reason the other two check theirs, and raises rather
+    than asserts so the invariant survives `python -O`.
+
+    `extra_channel_init` is emitted unconditionally and never left to the
+    class default. All four EF classes default it to 'zero', every paper
+    config passes 'mean', and the difference is invisible to everything except
+    the stem weights themselves: same config keys otherwise, same parameter
+    count, no error, no warning -- the depth channel would simply start dead
+    instead of at the RGB channel mean. See EF_EXTRA_CHANNEL_INIT.
+    """
+    if stem_channels != 4:
+        raise ValueError(
+            f'EF backbones take the full RGB-D tensor; got {stem_channels} '
+            'channels, expected 4')
+    stem = copy.deepcopy(bl_stem)
+    for key in EF_STEM_DELTA.get(backbone, {}).get('drop', ()):
+        stem.pop(key, None)
+    if 'in_channels' in stem:
+        stem['in_channels'] = stem_channels
+    stem['type'] = EF_TYPE[backbone]
+    stem['extra_channel_init'] = EF_EXTRA_CHANNEL_INIT
+    if pretrained:
+        stem['init_cfg'] = dict(type='Pretrained', checkpoint=pretrained)
+    return stem
+
+
 def _hd_stem(backbone: str, bl_stem: dict, pretrained, stem_channels: int,
              depth_pretrained: bool):
     """Build the HD (Dual+, heavy depth-branch) backbone stem for `backbone`.
@@ -194,22 +235,21 @@ def build_config(method: str, backbone: str, ablation: str | None = None,
     # data_channels: width of the tensor the pipeline loads and the
     # preprocessor normalises (RGB, or RGB+D once a run trains on depth).
     # stem_channels: the input width of the backbone actually swapped in.
-    # ef is NOT implemented yet. Its own merged configs show it does NOT feed
-    # RGB+D into the plain 3ch backbone class either: it uses
-    # dedicated 4-channel-native classes (ResNetV1c4Ch, MixVisionTransformer4Ch,
-    # MSCAN4Ch, TIMMBackbone4Ch), each built with extra_channel_init='mean' --
-    # so data_channels == stem_channels for ef too, just via a different stem
-    # class than bl's, not by reusing bl's. sd/hd's dual-branch backbones keep
-    # a fixed 3-channel RGB stem regardless of data_channels (a separate depth
-    # branch consumes the extra channel), and hd-rgb ablates that again.
-    # Keeping data_channels/stem_channels as separate names now means later
-    # tasks override stem_channels for those backbones without touching how
-    # the pipeline/preprocessor are built.
+    # ef is the one method where the two are equal at 4: it feeds the whole
+    # RGB-D tensor to a single encoder, via dedicated 4-channel-native backbone
+    # classes (ResNetV1c4Ch, MixVisionTransformer4Ch, MSCAN4Ch,
+    # TIMMBackbone4Ch) rather than by reusing bl's 3-channel one -- see
+    # _ef_stem. sd/hd's dual-branch backbones instead keep a fixed 3-channel
+    # RGB stem regardless of data_channels (a separate depth branch consumes
+    # the extra channel), and hd-rgb ablates that again -- which is why the two
+    # stay separate names.
     data_channels = 3 if method in ('bl',) else 4
     stem_channels = 3 if method in ('sd', 'hd') else data_channels
     shuffle = ablation == 'shuffled'
 
-    if method == 'sd':
+    if method == 'ef':
+        stem = _ef_stem(backbone, spec['stem'], spec['pretrained'], stem_channels)
+    elif method == 'sd':
         stem = _sd_stem(backbone, spec['stem'], spec['pretrained'], stem_channels)
     elif method == 'hd':
         stem = _hd_stem(backbone, spec['stem'], spec['pretrained'], stem_channels,

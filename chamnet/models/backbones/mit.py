@@ -175,9 +175,9 @@ class DualMiTB0(MixVisionTransformer):
 # changed (CrossModalGating from chamnet.models.fusion,
 # load_rgb_into_depth_encoder from chamnet.models.depth_pretrain, and mmseg's
 # own MixVisionTransformer/nlc_to_nchw). That file's other two classes,
-# DualMiTB0LateFusionRGB and DualMiTB0BiCMG, are ablations that belong to a
-# later task and are not ported here. No class body was modified during the
-# move.
+# DualMiTB0LateFusionRGB and DualMiTB0BiCMG, are ablations that are not part
+# of this release yet and are not ported here. No class body was modified
+# during the move.
 # ---------------------------------------------------------------------------
 
 

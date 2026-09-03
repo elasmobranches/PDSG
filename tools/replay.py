@@ -6,8 +6,8 @@
 사용법과 알려진 한계는 verification/README.md 를 먼저 읽을 것 — 특히 이
 스크립트가 **의도적으로 exit 1** 하는 두 이유(SegNeXt-T LightHamHead 의
 rand_init=True, 그리고 bl/resnet18 Pillar 가 소수점 2자리 반올림 경계인
-79.995 에 걸쳐 있는 것)와, --all 이 아직 이식되지 않은 ef 및 ablation
-조합에서 실패하는 이유.
+79.995 에 걸쳐 있는 것)와, --all 이 아직 이식되지 않은 ablation 조합에서
+실패하는 이유.
 """
 import argparse
 import contextlib
@@ -88,14 +88,12 @@ WORK = {  # (method, ablation) -> 원본 work_dir 과 flow 이름
     ('hd', 'rgb'):       ('work_dirs_v12+_512_controls', 'dual_plus_rgb'),
     ('ef', 'shuffled'):  ('work_dirs_v12+_512_ef_controls', 'proposed_shuffled'),
 }
-# `ef`, and every `hd`/`ef` ablation above, aren't ported into chamnet yet.
-# Attempting `ef` today builds a config that loads a 3-channel pretrained
-# checkpoint into an incorrectly-widened 4-channel stem and crashes on the
-# shape mismatch; the ablations have no registered backbone at all.
-# `--methods` therefore defaults to only what's actually implemented; `--all`
-# still means "every WORK entry" for when the rest lands, so it will fail
-# past bl/sd/hd until then -- see verification/README.md.
-IMPLEMENTED_METHODS = ('bl', 'sd', 'hd')
+# Every `hd`/`ef` ablation above is not ported into chamnet yet -- those
+# entries have no registered backbone at all. `--methods` therefore defaults
+# to only the four training methods that are implemented; `--all` still means
+# "every WORK entry" for when the ablations land, so it will fail past the
+# four until then -- see verification/README.md.
+IMPLEMENTED_METHODS = ('bl', 'ef', 'sd', 'hd')
 EXT = {'segnext_t': '_ext', 'convnext_atto': '_ext'}        # 확장 sweep 접미사
 
 

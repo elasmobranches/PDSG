@@ -21,10 +21,13 @@ _WHY = {
     ('sd', 'rgb'):      'not run in the paper',
     ('sd', 'nogate'):   'not run in the paper',
     ('sd', 'bigate'):   'not run in the paper',
-    ('hd', 'shuffled'): 'not enabled yet — arrives in a later task',
-    ('hd', 'rgb'):      'not enabled yet — arrives in a later task',
-    ('hd', 'nogate'):   'not enabled yet — arrives in a later task',
-    ('hd', 'bigate'):   'not enabled yet — arrives in a later task',
+    # Run in the paper, but their backbones are not part of this release yet.
+    # The wording is what a user sees, so it says what is true of the package
+    # rather than describing the work queue that will change it.
+    ('hd', 'shuffled'): 'not implemented in this release yet',
+    ('hd', 'rgb'):      'not implemented in this release yet',
+    ('hd', 'nogate'):   'not implemented in this release yet',
+    ('hd', 'bigate'):   'not implemented in this release yet',
 }
 
 

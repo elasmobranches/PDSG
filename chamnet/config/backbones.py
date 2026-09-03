@@ -131,3 +131,45 @@ HD_STEM_DELTA = {
 HD_OPTIM_EXTRA = {
     'mit_b0': dict(betas=(0.9, 0.999)),
 }
+
+# EF (early fusion, 4-channel input) backbone registry type per backbone. Each
+# is a subclass of the BL backbone for the same architecture whose first
+# convolution has been widened from 3 input channels to 4 -- see
+# chamnet/models/backbones/early_fusion.py.
+EF_TYPE = {
+    'resnet18': 'ResNetV1c4Ch',
+    'mit_b0': 'MixVisionTransformer4Ch',
+    'segnext_t': 'MSCAN4Ch',
+    'convnext_atto': 'TIMMBackbone4Ch',
+}
+
+# What the widened stem's 4th (depth) input filter starts as. All four EF
+# classes default this to 'zero'; all four of the paper's EF configs pass
+# 'mean' (confirmed in tests/fixtures/paper/ef_*.merged.py). It is an
+# architectural fact about this arm rather than a training hyper-parameter, so
+# it lives here rather than in the recipe -- but it must be emitted, because a
+# builder that silently let the class default apply would train a different
+# model with no error and an identical parameter count. See
+# chamnet/models/input_weight_adaptation.py for what the two values mean, and
+# tests/test_ablation_semantics.py for the check on the resulting weights.
+EF_EXTRA_CHANNEL_INIT = 'mean'
+
+# How each EF backbone dict differs from the BL dict for the same backbone
+# beyond `type`, `extra_channel_init` and `init_cfg`, read straight off
+# tests/fixtures/paper/ef_*.merged.py. Only one backbone needs an entry.
+#
+# Three of the four either state in_channels and raise it 3 -> 4
+# (mit_b0) or never state it at all (resnet18, segnext_t: ResNetV1c's and
+# MSCAN's own defaults are already right and the paper's configs leave them
+# implicit). convnext_atto is the exception: its BL config *does* state
+# in_channels=3 and its EF config drops the key entirely, because
+# TIMMBackbone4Ch deliberately builds the underlying timm model at 3 channels
+# -- so the pretrained stem loads unmodified -- and widens the stem conv to 4
+# itself afterwards. A stated in_channels would be overwritten either way; the
+# paper's config drops it rather than writing a number that is ignored, and
+# this reproduces that. tests/test_matches_paper.py checks the assumption that
+# makes the drop safe (TIMMBackbone's own in_channels default is 3) against
+# the class's real signature.
+EF_STEM_DELTA = {
+    'convnext_atto': dict(drop=('in_channels',)),
+}

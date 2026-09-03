@@ -162,6 +162,13 @@ def test_bl_matches_paper(backbone):
 
 
 @pytest.mark.parametrize('backbone', BACKBONES)
+def test_ef_matches_paper(backbone):
+    built = build_config(method='ef', backbone=backbone,
+                         recipe='paper_v13', seed=37)
+    _assert_matches_paper(built, _fixture(f'ef_{backbone}'))
+
+
+@pytest.mark.parametrize('backbone', BACKBONES)
 def test_sd_matches_paper(backbone):
     built = build_config(method='sd', backbone=backbone,
                          recipe='paper_v13', seed=37)
@@ -217,6 +224,51 @@ def test_hd_mit_b0_stem_omissions_are_mixvisiontransformer_defaults():
     # argument runs in the other direction.
     for key, value in HD_STEM_DELTA['mit_b0']['add'].items():
         assert defaults[key] == value
+
+
+def test_ef_convnext_in_channels_drop_relies_on_timms_own_default():
+    """EF's ConvNeXt backbone dict drops the in_channels key its BL sibling sets.
+
+    `chamnet.config.backbones.EF_STEM_DELTA['convnext_atto']` removes it when
+    deriving the EF stem, because the paper's EF ConvNeXt config doesn't carry
+    it — and `test_ef_matches_paper` only checks that the emitted dict matches
+    that config literally, so it would pass just as happily if dropping the key
+    silently changed how many channels timm builds. This test is the other
+    half.
+
+    TIMMBackbone4Ch is the one EF class that must NOT hand its 4 channels
+    straight to the underlying model: it deliberately builds timm at 3 channels
+    so the pretrained stem loads unmodified, then widens the stem conv itself
+    (`kwargs['in_channels'] = 3` in its __init__ — see
+    chamnet/models/backbones/early_fusion.py for why timm's own
+    adapt_input_conv is avoided). Dropping the config key is therefore harmless
+    *only because* TIMMBackbone's own default is already 3. Read that default
+    out of the class's actual signature rather than restating it, so an mmseg
+    upgrade that changed it fails here instead of quietly building a stem of a
+    different width and then widening the wrong thing.
+
+    The complementary check — that the emitted config really does yield a
+    4-channel stem on all four backbones, key or no key — is
+    tests/test_ablation_semantics.py::test_ef_stem_takes_four_channels_
+    initialised_from_the_rgb_mean, which looks at the built conv itself.
+    """
+    import inspect
+
+    from mmseg.models.backbones.timm_backbone import TIMMBackbone
+
+    from chamnet.config.backbones import BACKBONES, EF_STEM_DELTA
+
+    assert set(EF_STEM_DELTA) == {'convnext_atto'}, (
+        'EF_STEM_DELTA grew an entry without a matching defaults check here')
+    assert set(EF_STEM_DELTA['convnext_atto']['drop']) == {'in_channels'}
+    assert BACKBONES['convnext_atto']['stem']['in_channels'] == 3, (
+        "precondition: BL's ConvNeXt stem is the 3-channel one EF derives from")
+
+    default = inspect.signature(TIMMBackbone.__init__).parameters['in_channels'].default
+    assert default == 3, (
+        f'TIMMBackbone default in_channels is {default!r}, not 3; dropping the '
+        'key for EF would build the timm model at a different width than the '
+        'pretrained stem expects, not just omit a redundant spelling')
 
 
 def test_hd_mit_b0_explicit_betas_are_the_adamw_defaults():

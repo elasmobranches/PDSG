@@ -19,6 +19,7 @@ def register_all() -> None:
     from chamnet.datasets.transforms import augmentation       # noqa: F401
     from chamnet.hooks import iter_logger                      # noqa: F401
     from chamnet.models.backbones import resnet, mit, mscan, convnext  # noqa: F401
+    from chamnet.models.backbones import early_fusion                  # noqa: F401
     # Registers ChamNetSegDataPreProcessor (see that module's docstring for
     # why it's a distinct name rather than an override of vanilla mmseg's
     # SegDataPreProcessor, which is buggy for >3-channel sd/hd/ef input).

@@ -7,12 +7,19 @@ hardcoded to random initialisation while its log said ``pretrained``. Every
 assertion here observes model weights, never a flag read back off a config
 and never a message.
 
-Network: the HD checks below load the same ImageNet checkpoints training
+Network: the checks below load the same ImageNet checkpoints training
 would, so they need network access (or a warm ``~/.cache/torch/hub``) the
 first time they run. That is deliberate — the only way to see whether
 pretrained weights landed is to have the pretrained weights. These tests
 fail rather than skip when the download fails, because a skip is how a check
 like this quietly stops checking.
+
+Two arms are covered here. HD's depth encoder (does ``depth_pretrained``
+load anything, and is the transfer rule an average rather than a sum?) and
+EF's widened stem (is the 4th input channel the RGB filter mean the paper's
+configs ask for, rather than the zeros every EF class defaults to?). Both
+are settings whose effect is invisible in the config, invisible in the
+parameter count, and invisible in any log line.
 """
 import copy
 
@@ -25,10 +32,10 @@ from chamnet.config.builder import build_config
 
 chamnet.register_all()
 
-# Every test in this module builds an HD backbone and loads the same
-# ImageNet checkpoints training would, so all of them need network access
-# (or a warm ~/.cache/torch/hub) -- see the `network` marker's note in
-# pyproject.toml for why they are not skipped when that is unavailable.
+# Every test in this module builds a backbone that loads the same ImageNet
+# checkpoints training would, so all of them need network access (or a warm
+# ~/.cache/torch/hub) -- see the `network` marker's note in pyproject.toml
+# for why they are not skipped when that is unavailable.
 pytestmark = pytest.mark.network
 
 BACKBONES = ['resnet18', 'mit_b0', 'segnext_t', 'convnext_atto']
@@ -215,3 +222,182 @@ def test_hd_depth_first_conv_is_the_channel_averaged_rgb_filter(backbone):
         f'{backbone} depth first conv is not the channel-averaged RGB filter; '
         f'ratio to expected ~'
         f'{(depth_conv.weight.norm() / expected.norm()).item():.3f}')
+
+
+# ---------------------------------------------------------------------------
+# EF (early fusion): one widened stem convolution, and what its 4th input
+# channel starts as.
+# ---------------------------------------------------------------------------
+
+# Where each EF backbone's widened stem convolution lives on the built module.
+# resnet18 and segnext_t declare the same path (plus '.weight') on the class as
+# FIRST_CONV_KEY and use it to expand the checkpoint tensor;
+# MixVisionTransformer4Ch hardcodes its key inline instead of declaring one,
+# and TIMMBackbone4Ch reaches it through its `stem_conv_attr` argument on
+# self.timm_model. The helper below cross-checks this table against the class
+# attribute wherever one exists, and against the built module in every case, so
+# the two cannot drift apart unnoticed.
+EF_STEM_CONV_PATH = {
+    'resnet18': 'stem.0',
+    'mit_b0': 'layers.0.0.projection',
+    'segnext_t': 'patch_embed1.proj.0',
+    'convnext_atto': 'timm_model.stem_0',
+}
+
+# How each EF backbone's pretrained RGB stem filter is obtained independently
+# of the model under test, to check what actually landed in it. Three load an
+# mmseg checkpoint through init_cfg; ConvNeXt's weights come from timm inside
+# __init__ and have no init_cfg, so an independently constructed timm model is
+# the reference instead (the same shape of argument as LOADS_AT above).
+EF_LOADS_AT = {
+    'resnet18': 'init_cfg',
+    'mit_b0': 'init_cfg',
+    'segnext_t': 'init_cfg',
+    'convnext_atto': 'timm',
+}
+
+
+def _get_by_path(module, dotted):
+    obj = module
+    for part in dotted.split('.'):
+        obj = obj[int(part)] if part.isdigit() else getattr(obj, part)
+    return obj
+
+
+def _backbone(method, backbone):
+    """Build just the backbone `build_config` emits for (method, backbone)."""
+    cfg = build_config(method=method, backbone=backbone, recipe='paper_v13', seed=37)
+    with chamnet.scoped(cfg):
+        return MODELS.build(copy.deepcopy(cfg.model['backbone']))
+
+
+def _ef_stem_conv(model, backbone):
+    """Resolve the widened stem conv, refusing to be pointed at the wrong one.
+
+    A table of module paths is exactly the kind of thing that silently rots:
+    point it at some other convolution and every assertion below still runs,
+    just against a layer nobody claimed anything about. Three cross-checks
+    make that impossible — the path must resolve to a Conv2d, that conv must
+    be the *only* 4-input-channel module anywhere in the backbone (which is
+    what "early fusion widens exactly one convolution" means), and where the
+    class declares FIRST_CONV_KEY it must name this same path.
+    """
+    conv = _get_by_path(model, EF_STEM_CONV_PATH[backbone])
+    assert isinstance(conv, torch.nn.Conv2d), (
+        f'{backbone}: {EF_STEM_CONV_PATH[backbone]!r} resolved to '
+        f'{type(conv).__name__}, not a Conv2d')
+    four_channel = [name for name, m in model.named_modules()
+                    if getattr(m, 'in_channels', None) == 4]
+    assert four_channel == [EF_STEM_CONV_PATH[backbone]], (
+        f'{backbone}: expected exactly one 4-input-channel module, the stem at '
+        f'{EF_STEM_CONV_PATH[backbone]!r}; found {four_channel}')
+    declared = getattr(type(model), 'FIRST_CONV_KEY', None)
+    if declared is not None:
+        assert declared == EF_STEM_CONV_PATH[backbone] + '.weight', (
+            f'{backbone} declares FIRST_CONV_KEY={declared!r}, which is not the '
+            f'stem this test inspects ({EF_STEM_CONV_PATH[backbone]!r})')
+    return conv
+
+
+def _pretrained_rgb_stem_filter(model, backbone):
+    """The 3-channel stem filter EF is supposed to have started from."""
+    if EF_LOADS_AT[backbone] == 'timm':
+        import timm
+        reference = timm.create_model('convnext_atto', features_only=True,
+                                      pretrained=True, in_chans=3,
+                                      out_indices=(0, 1, 2, 3))
+        return reference.stem_0.weight.detach(), reference.stem_0.bias.detach()
+
+    from mmengine.runner.checkpoint import _load_checkpoint
+
+    checkpoint = _load_checkpoint(model.init_cfg['checkpoint'], map_location='cpu')
+    state_dict = checkpoint.get('state_dict', checkpoint)
+    return state_dict[EF_STEM_CONV_PATH[backbone] + '.weight'], None
+
+
+@pytest.mark.parametrize('backbone', BACKBONES)
+def test_ef_adds_only_the_stems_extra_input_channel(backbone):
+    """EF's result cannot be explained by capacity — it is one input plane.
+
+    The whole argument for the early-fusion arm is that it is the *cheapest*
+    way to use depth: the architecture is the RGB baseline's, unchanged, with
+    the first convolution widened from 3 input channels to 4. So the parameter
+    difference against BL must be exactly that one plane of stem filter
+    weights, `out_channels x kernel_h x kernel_w` — and nothing else.
+
+    That number is not a constant across backbones (288 on ResNet-18's 3x3
+    deep stem, 144 on SegNeXt-T's, 640 on ConvNeXt-Atto's 4x4 patch stem,
+    1568 on MiT-B0's 7x7 patch embed), so a bound like "under a thousand"
+    would both admit MiT-B0's real value as a failure and let a genuinely
+    wrong stem pass on the other three. Compute the expected delta from the
+    backbone's own stem conv shape instead: it is exact, it self-documents,
+    and it is the claim the test is named for.
+    """
+    bl = _backbone('bl', backbone)
+    ef = _backbone('ef', backbone)
+    conv = _ef_stem_conv(ef, backbone)
+
+    out_channels, in_channels, kh, kw = conv.weight.shape
+    assert in_channels == 4
+    expected = out_channels * kh * kw
+
+    n_bl = sum(p.numel() for p in bl.parameters())
+    n_ef = sum(p.numel() for p in ef.parameters())
+    assert n_ef - n_bl == expected, (
+        f'{backbone}: EF has {n_ef - n_bl} parameters more than BL, but '
+        f'widening its stem conv by one input channel accounts for exactly '
+        f'{expected} ({out_channels}x{kh}x{kw}). Something other than the '
+        'stem changed.')
+
+
+@pytest.mark.parametrize('backbone', BACKBONES)
+def test_ef_stem_takes_four_channels_initialised_from_the_rgb_mean(backbone):
+    """The depth channel's filter must be the RGB filter mean, not zeros.
+
+    All four EF classes default `extra_channel_init` to `'zero'`; all four of
+    the paper's EF configs pass `'mean'` (see EF_EXTRA_CHANNEL_INIT). If
+    `build_config` failed to emit it, the depth channel's stem weights would
+    initialise to zeros — the depth input contributing literally nothing at
+    step 0 — with no error, no warning, no config difference visible anywhere
+    else, and an identical parameter count, so
+    `test_ef_adds_only_the_stems_extra_input_channel` above cannot see it.
+    This is the same family as HD's `depth_pretrained` trap, which this
+    project has already shipped twice.
+
+    Observing the flag would prove nothing, so this observes the weights the
+    model would actually start training from, after `init_weights()` — and it
+    checks the transformation, not merely that something moved: channel 3 must
+    equal the *mean* of channels 0-2 (a sum, or a copy of one channel, is a
+    different rule that still leaves it non-zero), and channels 0-2 must be
+    the pretrained RGB filter itself, obtained independently of the model
+    under test. That last part matters most for ConvNeXt, where the whole
+    reason TIMMBackbone4Ch widens the stem by hand instead of asking timm for
+    `in_chans=4` is that timm's `adapt_input_conv` would rescale the RGB
+    filters to 0.75x — which this comparison would catch and a
+    zero-versus-nonzero check would not.
+    """
+    model = _backbone('ef', backbone)
+    model.init_weights()
+    conv = _ef_stem_conv(model, backbone)
+    weight = conv.weight.detach()
+    assert weight.shape[1] == 4
+
+    rgb_filter, rgb_bias = _pretrained_rgb_stem_filter(model, backbone)
+    assert rgb_filter.shape[1] == 3, 'the RGB reference should be 3-channel'
+    assert torch.equal(weight[:, :3], rgb_filter), (
+        f'{backbone}: EF stem channels 0-2 are not the pretrained RGB filter '
+        f'(ratio to expected ~'
+        f'{(weight[:, :3].norm() / rgb_filter.norm()).item():.4f})')
+    expected_depth = rgb_filter.mean(dim=1, keepdim=True)
+    assert torch.equal(weight[:, 3:], expected_depth), (
+        f'{backbone}: EF stem channel 3 is not the channel-averaged RGB '
+        f'filter; ratio to expected ~'
+        f'{(weight[:, 3:].norm() / expected_depth.norm()).item():.4f}')
+    # ...and the whole point is that 'mean' is not 'zero', the class default a
+    # config that forgot to say so would silently get.
+    assert weight[:, 3:].abs().sum() > 0, (
+        f'{backbone}: EF depth channel initialised to zeros — build_config '
+        "did not pass extra_channel_init='mean'")
+    if rgb_bias is not None:
+        assert torch.equal(conv.bias.detach(), rgb_bias), (
+            f'{backbone}: widening the stem lost its pretrained bias')

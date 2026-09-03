@@ -7,8 +7,18 @@ import sys
 import chamnet
 from chamnet.config.backbones import BACKBONES
 from chamnet.config.builder import build_config
+from chamnet.config.combos import VALID
 
-METHODS = ['bl', 'ef', 'sd', 'hd']
+# Derived from the combination table rather than restated, so `chamnet list`
+# and `--method` cannot advertise a method the builder no longer serves.
+METHODS = sorted({m for m, _ in VALID})
+
+# ABLATIONS stays hand-written on purpose: it is deliberately a *superset* of
+# what is currently valid, so `--ablation nogate` reaches combos.validate() and
+# gets its explanatory message instead of argparse's bare "invalid choice".
+# `list` filters it through VALID (and appends anything VALID knows about that
+# this vocabulary doesn't), so nothing dead is printed and nothing live is
+# omitted.
 ABLATIONS = ['shuffled', 'rgb', 'nogate', 'bigate']
 
 
@@ -50,9 +60,10 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
 
     if a.cmd == 'list':
-        from chamnet.config.combos import VALID
+        vocab = ABLATIONS + sorted({x for _, x in VALID
+                                    if x is not None and x not in ABLATIONS})
         for m in METHODS:
-            ok = [x or '(없음)' for x in ABLATIONS + [None] if (m, x) in VALID]
+            ok = [x or '(없음)' for x in vocab + [None] if (m, x) in VALID]
             print(f'{m:3s} × {", ".join(sorted(BACKBONES))}  ablation: {", ".join(ok)}')
         return 0
 

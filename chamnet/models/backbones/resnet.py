@@ -222,8 +222,8 @@ class DualResNetV1c18(ResNetV1c):
 # changed (CrossModalGating from chamnet.models.fusion, ResNetV1c from mmseg's
 # own backbones module). That file's other two classes,
 # DualResNetV1c18LateFusionRGB and DualResNetV1c18BiCMG, are ablations that
-# belong to a later task and are not ported here. No class body was modified
-# during the move.
+# are not part of this release yet and are not ported here. No class body was
+# modified during the move.
 # ---------------------------------------------------------------------------
 
 _RESNET_STAGE_DIMS = {

@@ -21,31 +21,30 @@ on that server, with the dataset and checkpoints in place, it runs as:
 python3 tools/replay.py --out verification/replay.csv
 ```
 
-`--methods` defaults to the three training methods this package currently
-implements: `bl`, `sd` and `hd`. The fourth the underlying project defines,
-`ef`, and every `hd`/`ef` ablation in the script's `WORK` table, aren't
-implemented in this package yet. `--all` replays every entry in `WORK`
-regardless, so it will fail past `bl`/`sd`/`hd` until those land — this is a
-real, known limitation, not a bug to silently paper over.
+`--methods` defaults to the four training methods this package implements:
+`bl`, `ef`, `sd` and `hd`. The `hd`/`ef` ablations in the script's `WORK`
+table aren't implemented in this package yet. `--all` replays every entry in
+`WORK` regardless, so it will fail past those four until the ablations land —
+this is a real, known limitation, not a bug to silently paper over.
 
 ## The tool exits 1 by design
 
 `tools/replay.py` gates on **both** mIoU and Pillar (Pillar is the paper's
 headline metric, and it can move further than mIoU on the same row — e.g.
 `bl/segnext_t` was 0.04 off on mIoU but 0.20 off on Pillar; gating on mIoU
-alone would have missed that). Of the 12 `bl`/`sd`/`hd` combinations, three
-never match and one is a coin flip, for two separate and separately
-documented reasons: the three SegNeXt-T rows (`bl/segnext_t`,
+alone would have missed that). Of the 16 `bl`/`ef`/`sd`/`hd` combinations,
+four never match and one is a coin flip, for two separate and separately
+documented reasons: the four SegNeXt-T rows (`bl/segnext_t`, `ef/segnext_t`,
 `sd/segnext_t`, `hd/segnext_t`), explained immediately below, and
 `bl/resnet18`'s Pillar, which lands on a 2-decimal rounding boundary — see
 "The `bl/resnet18` Pillar boundary" further down. Neither is a defect, and
 the tool reports both as failures rather than being tuned to hide them.
 
-**The printed pass count is therefore not deterministic.** It is 8/12 or
-9/12 depending purely on which side of that boundary the ResNet row happens
+**The printed pass count is therefore not deterministic.** It is 11/16 or
+12/16 depending purely on which side of that boundary the ResNet row happens
 to land on in a given run; the committed `replay.csv` shows one of the two
 and a fresh run may legitimately show the other, with no code change and no
-significance. The eight rows that always match are the eight that carry the
+significance. The eleven rows that always match are the eleven that carry the
 evidence.
 
 Every `hd` row except SegNeXt-T matches exactly on both metrics
@@ -54,27 +53,61 @@ Every `hd` row except SegNeXt-T matches exactly on both metrics
 backbones and their pretrained depth transfer did not change what those
 models compute.
 
+The same holds for `ef`, the early-fusion arm, whose non-SegNeXt rows match
+exactly on both metrics too (`ef/resnet18` 80.48/82.00, `ef/mit_b0`
+79.31/77.87, `ef/convnext_atto` 80.54/82.59 mIoU/Pillar). That is worth
+stating separately because early fusion's entire difference from the
+baseline is one widened stem convolution, whose fourth input channel is
+initialised from the mean of the pretrained RGB filters — a detail that
+changes no config key, no parameter count and no log line. Replaying the
+original checkpoints through the ported code is the end-to-end check that it
+was reproduced: three arms landing on the recorded numbers to the last digit
+is not something a subtly different stem would produce.
+
 `LightHamHead`'s `NMF2D._build_bases` (`mmseg/models/decode_heads/ham_head.py`,
 lines 89-90 and 123) calls `torch.rand((B * S, D, R))` **unconditionally on
 every forward pass** whenever `rand_init=True` — which is the setting in
 every SegNeXt-T config in this project, identically in the original merged
 config and this package's builder output. SegNeXt-T's segmentation logits
-are therefore RNG-state dependent by design, not solely a function of
-weights + input; this is mmseg's own (unmodified, vanilla) `LightHamHead`
-implementation, not something this port changed. Concretely: rerunning
-`bl/segnext_t` with `randomness.seed=42` (the seed the original recorded run
-used, vs. this replay's `seed=37`) moved the observed gap from 0.04/0.20
-(mIoU/Pillar) to 0.01/0.11 — closer, in the expected direction, but still
-not exact, because seeding `torch.manual_seed` doesn't reconstruct the exact
-sequence of prior RNG calls a *different process* had made by the time
-`_build_bases` runs. Consistent with that explanation, the SegNeXt-T rows
-are stable *replay-to-replay* — two consecutive replays reproduced all three
-to the last digit (`bl` 80.76/77.63, `sd` 80.54/80.47, `hd` 80.52/82.21
-mIoU/Pillar) while still differing from the recorded numbers by 0.03-0.10
-mIoU and 0.10-0.20 Pillar. Two fresh processes doing the same work in the
-same order draw the same random bases; the process that produced
-`results_v8.csv` ran its test loop at the end of a training run, with a very
-different amount of RNG already consumed.
+are therefore a function of RNG state as well as of weights and input; this
+is mmseg's own (unmodified, vanilla) `LightHamHead` implementation, not
+something this port changed.
+
+That draw is taken **on the CPU from the global default generator** — the
+tensor is created and only then moved to the device, with no device
+generator and no local `Generator` anywhere in the path — so it is fully
+determined by the last `torch.manual_seed` and by how many draws have been
+taken since. Two consequences, and they point in opposite directions.
+
+**Replay-to-replay it does reproduce, exactly.** `tools/replay.py` builds a
+fresh `Runner` for every row, and `Runner.__init__` re-seeds the global RNG
+from `randomness.seed` (37 here), so each row is a pure function of (seed,
+weights, data) and inherits nothing from the rows before it. Three replays
+have now produced identical SegNeXt-T numbers to the last digit (`bl`
+80.76/77.63, `sd` 80.54/80.47, `hd` 80.52/82.21 mIoU/Pillar). That is
+stronger than "two processes did the same work in the same order": the two
+committed `replay.csv` runs replayed a **different number of rows in a
+different order** — 12 versus 16, with `sd/segnext_t` moving from the 7th
+model built to the 11th, four early-fusion models' worth of intervening
+draws further in — and still agreed exactly. Per-row re-seeding is what
+explains that; process identity has nothing to do with it. (`ef/segnext_t`,
+80.86/80.67 against a recorded 80.84/80.59, has been observed once so far
+and sits in the same band — 0.02 mIoU, 0.08 Pillar — but one observation
+says nothing about its stability, so it is reported rather than counted as
+corroboration.)
+
+**Against the recorded numbers it cannot.** The process that wrote
+`results_v8.csv` seeded once and then *trained*, reaching `_build_bases` in
+its test loop after many thousands of intervening draws. It is on a
+different RNG trajectory, and re-running the replay does not move onto that
+trajectory — which is why these four rows differ, why the difference is a
+fixed offset rather than run-to-run noise, and why no amount of re-running
+will close it. Consistent with that: rerunning `bl/segnext_t` with
+`randomness.seed=42` (the seed the original recorded run used, versus this
+replay's 37) moved the observed gap from 0.04/0.20 (mIoU/Pillar) to
+0.01/0.11 — closer, in the expected direction, but still not exact, because
+matching the seed does not match how much of that seed's sequence had been
+consumed before `_build_bases` was reached.
 
 What this artifact can and can't support: it is a code-equivalence check —
 evidence that this port computes the same thing the original code did, for
@@ -83,10 +116,15 @@ of any published result. It says nothing about how a ±0.2 Pillar difference
 compares to the spread across independently trained runs; that would need
 its own measurement against however many training seeds actually back the
 numbers being defended, which is outside what a single-checkpoint replay
-can establish. What it does support: **SegNeXt-T evaluation is not exactly
-reproducible even with fixed weights**, so nobody should expect a future
-replay run's SegNeXt-T row to match `results_v8.csv` bit-for-bit — a small,
-bounded gap on those three rows specifically is the expected outcome, and
+can establish. The SegNeXt-T gap in particular is not a sample from a
+distribution at all — it is the fixed offset between two RNG trajectories,
+so its magnitude (0.02-0.20 here) is **one observation, not a spread**, and
+reading it as an error bar would be a mistake in either direction. What it
+does support: **SegNeXt-T's evaluation output depends on RNG state, not on
+weights and input alone** — so nobody should expect a replay's SegNeXt-T row
+to match a number that `results_v8.csv` recorded at the end of a training
+run, even though that same replay row reproduces itself exactly. A small,
+bounded gap on those four rows specifically is the expected outcome, and
 the tool's exit code reflects that honestly rather than being tuned to
 always report success.
 

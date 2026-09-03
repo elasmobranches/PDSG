@@ -22,7 +22,7 @@ def test_message_names_the_offending_combo():
 
 def test_not_yet_enabled_hd_ablations_say_so_not_unknown():
     for ablation in ('shuffled', 'rgb', 'nogate', 'bigate'):
-        with pytest.raises(ValueError, match='not enabled yet'):
+        with pytest.raises(ValueError, match='not implemented in this release yet'):
             validate('hd', ablation)
 
 
