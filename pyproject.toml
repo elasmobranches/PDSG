@@ -16,8 +16,14 @@ dependencies = [
     "PyYAML>=6.0",
 ]
 
+[project.optional-dependencies]
+test = ["pytest", "Pillow>=10.0"]
+
 [project.scripts]
 chamnet = "chamnet.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["chamnet*"]
+
+[tool.setuptools.package-data]
+chamnet = ["recipes/*.yaml"]
