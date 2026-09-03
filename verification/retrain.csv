@@ -1,0 +1,18 @@
+# commit=cae8cbe date=2026-09-02T15:22:01.545015+00:00 train_seed=37 eval_seed=42 gate=recorded-10-seed-range gated=test/mIoU gpu='NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition' torch=2.9.0a0+50eac811a6.nv25.09 mmseg=1.2.2 recipe=paper
+method,backbone,ablation,split,metric,gated,retrain,recorded_seeds,recorded_min,recorded_max,recorded_mean,recorded_sd,in_recorded_range,z,recorded_seed37,delta_vs_seed37,predict95_lo,predict95_hi,in_predict95,retrain_best_iter,recorded_best_iter
+hd,resnet18,-,test,mIoU,True,81.65,10,80.15,82.2,81.655,0.6,True,-0.01,81.88,-0.23,80.23,83.08,True,1980,1720
+hd,resnet18,-,test,pillar,False,83.7,10,81.54,84.28,83.085,1.093,True,0.56,84.01,-0.31,80.49,85.68,True,1980,1720
+hd,resnet18,-,val,mIoU,False,83.71,10,82.88,84.01,83.674,0.334,True,0.11,83.72,-0.01,82.88,84.47,True,1980,1720
+hd,resnet18,-,val,pillar,False,80.12,10,80.31,82.13,81.192,0.68,False,-1.58,80.83,-0.71,79.58,82.81,True,1980,1720
+bl,resnet18,-,test,mIoU,True,80.33,10,79.82,81.51,80.589,0.553,True,-0.47,80.95,-0.62,79.28,81.9,True,1260,1300
+bl,resnet18,-,test,pillar,False,78.89,10,79.03,81.21,79.867,0.873,False,-1.12,80.0,-1.11,77.79,81.94,True,1260,1300
+bl,resnet18,-,val,mIoU,False,82.35,10,82.33,83.51,82.763,0.379,True,-1.09,82.65,-0.3,81.86,83.66,True,1260,1300
+bl,resnet18,-,val,pillar,False,77.4,10,76.48,79.96,78.024,1.299,True,-0.48,78.28,-0.88,74.94,81.1,True,1260,1300
+hd,resnet18,shuffled,test,mIoU,True,80.82,10,80.13,80.97,80.658,0.301,True,0.54,80.97,-0.15,79.94,81.37,True,2220,1880
+hd,resnet18,shuffled,test,pillar,False,80.23,10,78.6,80.85,80.037,0.64,True,0.3,80.4,-0.17,78.52,81.56,True,2220,1880
+hd,resnet18,shuffled,val,mIoU,False,83.09,10,82.51,83.23,82.937,0.189,True,0.81,82.95,0.14,82.49,83.38,True,2220,1880
+hd,resnet18,shuffled,val,pillar,False,77.93,10,76.74,79.3,78.517,0.788,True,-0.74,79.17,-1.24,76.65,80.39,True,2220,1880
+ef,mit_b0,-,test,mIoU,True,79.08,10,77.92,80.24,79.442,0.714,True,-0.51,79.31,-0.23,77.75,81.14,True,1260,940
+ef,mit_b0,-,test,pillar,False,77.01,10,77.23,80.62,78.88,1.263,False,-1.48,77.87,-0.86,75.88,81.88,True,1260,940
+ef,mit_b0,-,val,mIoU,False,82.94,10,81.83,83.22,82.702,0.393,True,0.61,82.48,0.46,81.77,83.63,True,1260,940
+ef,mit_b0,-,val,pillar,False,78.37,10,77.65,80.38,79.169,0.898,True,-0.89,79.36,-0.99,77.04,81.3,True,1260,940
