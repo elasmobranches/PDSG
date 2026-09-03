@@ -6,7 +6,7 @@ from pathlib import Path
 
 from mmengine.config import Config
 
-from chamnet.config.backbones import BACKBONES, NORM
+from chamnet.config.backbones import BACKBONES, NORM, SD_TYPE
 from chamnet.config.combos import validate
 from chamnet.config.schema import Recipe, load_recipe
 
@@ -20,7 +20,7 @@ def _preprocessor(size, data_channels, depth_mean_std):
     if data_channels == 4:
         mean.append(depth_mean_std[0])
         std.append(depth_mean_std[1])
-    return dict(type='SegDataPreProcessor', mean=mean, std=std, bgr_to_rgb=True,
+    return dict(type='ChamNetSegDataPreProcessor', mean=mean, std=std, bgr_to_rgb=True,
                 pad_val=0, seg_pad_val=255, size=tuple(size),
                 test_cfg=dict(size_divisor=32))
 
@@ -62,6 +62,47 @@ def _aux_head(spec, r: Recipe):
                                 loss_weight=r.loss.aux_weight,
                                 class_weight=list(r.loss.class_weight)))
     return aux
+
+
+def _sd_stem(backbone: str, bl_stem: dict, pretrained, stem_channels: int):
+    """Build the SD (Dual, shallow depth-branch) backbone stem for `backbone`.
+
+    Derived from the BL stem for the same backbone rather than written from
+    scratch, since three of the four share every RGB-side architecture
+    argument with BL verbatim. Confirmed field-for-field against
+    tests/fixtures/paper/sd_*.merged.py — per this module's header rule, the
+    fixture is the truth if this ever disagrees.
+
+    `stem_channels` isn't threaded into the returned stem dict — every SD
+    class hardcodes its RGB stream to 3ch internally and doesn't expose it as
+    a config key at all (that's what the `in_channels` pop below is for), so
+    there's nothing to set it *to*. It's still taken as a parameter and
+    checked here rather than silently ignored: it documents and enforces the
+    invariant `build_config` already relies on (stem_channels == 3 for `sd`)
+    instead of leaving that fact implicit in the caller alone. A `raise`
+    rather than `assert`, since this is library code that must still enforce
+    the invariant under `python -O` (which strips asserts), not a test.
+    """
+    if stem_channels != 3:
+        raise ValueError(
+            f'SD backbones always take a 3-channel RGB stem; got {stem_channels}')
+    if backbone == 'convnext_atto':
+        # DualConvNeXtAttoSerial calls timm.create_model itself — model_name,
+        # features_only, pretrained and out_indices are all hardcoded inside
+        # __init__, so none of TIMMBackbone's config keys (the BL stem) apply.
+        return dict(type=SD_TYPE[backbone], fusion_reduction=4)
+    stem = copy.deepcopy(bl_stem)
+    stem.pop('in_channels', None)  # RGB stream is hardcoded to 3ch inside the class
+    stem['type'] = SD_TYPE[backbone]
+    stem['fusion_reduction'] = 4
+    if backbone == 'resnet18':
+        # This project's ResNet-18 is non-dilated (strides=(1,2,2,2)), so the
+        # depth branch must halve resolution at every stage too — the
+        # class's own default (2,1,1) assumes a dilated RGB backbone instead.
+        stem['depth_stage_strides'] = (2, 2, 2)
+    if pretrained:
+        stem['init_cfg'] = dict(type='Pretrained', checkpoint=pretrained)
+    return stem
 
 
 def _pipelines(r: Recipe, data_channels, shuffle):
@@ -114,22 +155,30 @@ def build_config(method: str, backbone: str, ablation: str | None = None,
     # data_channels: width of the tensor the pipeline loads and the
     # preprocessor normalises (RGB, or RGB+D once a run trains on depth).
     # stem_channels: the input width of the backbone actually swapped in.
-    # The two happen to be equal for every method this builder can construct
-    # today (bl only; ef's early fusion feeds RGB+D straight into the same
-    # backbone class once Task 8 adds it) but they diverge for sd/hd, whose
-    # dual-branch backbone keeps a 3-channel RGB stem regardless of
-    # data_channels, and again for the hd-rgb ablation. Keeping them as
-    # separate names now means later tasks override stem_channels for those
-    # backbones without touching how the pipeline/preprocessor are built.
+    # ef is NOT implemented yet (that's Task 10, not this one -- despite what
+    # an earlier version of this comment claimed). Task 10's fixtures show ef
+    # does NOT feed RGB+D into the plain 3ch backbone class either: it uses
+    # dedicated 4-channel-native classes (ResNetV1c4Ch, MixVisionTransformer4Ch,
+    # MSCAN4Ch, TIMMBackbone4Ch), each built with extra_channel_init='mean' --
+    # so data_channels == stem_channels for ef too, just via a different stem
+    # class than bl's, not by reusing bl's. sd/hd's dual-branch backbones keep
+    # a fixed 3-channel RGB stem regardless of data_channels (a separate depth
+    # branch consumes the extra channel), and hd-rgb ablates that again.
+    # Keeping data_channels/stem_channels as separate names now means later
+    # tasks override stem_channels for those backbones without touching how
+    # the pipeline/preprocessor are built.
     data_channels = 3 if method in ('bl',) else 4
-    stem_channels = data_channels
+    stem_channels = 3 if method in ('sd', 'hd') else data_channels
     shuffle = ablation == 'shuffled'
 
-    stem = copy.deepcopy(spec['stem'])
-    if 'in_channels' in stem:
-        stem['in_channels'] = stem_channels
-    if spec['pretrained']:
-        stem['init_cfg'] = dict(type='Pretrained', checkpoint=spec['pretrained'])
+    if method == 'sd':
+        stem = _sd_stem(backbone, spec['stem'], spec['pretrained'], stem_channels)
+    else:
+        stem = copy.deepcopy(spec['stem'])
+        if 'in_channels' in stem:
+            stem['in_channels'] = stem_channels
+        if spec['pretrained']:
+            stem['init_cfg'] = dict(type='Pretrained', checkpoint=spec['pretrained'])
 
     train_pipe, test_pipe = _pipelines(r, data_channels, shuffle)
     preproc = _preprocessor(r.data.size, data_channels, spec['depth_mean_std'])

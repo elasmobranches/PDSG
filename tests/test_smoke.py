@@ -2,7 +2,6 @@ import torch
 import chamnet
 from chamnet.config.builder import build_config
 from chamnet.config.schema import load_recipe
-from mmengine.registry import DefaultScope
 from mmseg.registry import DATASETS, MODELS
 
 chamnet.register_all()
@@ -19,7 +18,7 @@ def test_bl_builds_and_backprops(synthetic_data):
     # registry, which can't resolve mmseg-only types like SegDataPreProcessor.
     # Scope the call explicitly instead of mutating global state at import
     # time (chamnet.register_all() must stay side-effect-free for callers).
-    with DefaultScope.overwrite_default_scope(cfg.default_scope):
+    with chamnet.scoped(cfg):
         model = MODELS.build(cfg.model)
     x = torch.randn(2, 3, 64, 128)
     feats = model.backbone(x)
@@ -27,6 +26,56 @@ def test_bl_builds_and_backprops(synthetic_data):
     assert logits.shape[1] == 8
     logits.sum().backward()
     assert any(p.grad is not None for p in model.backbone.parameters())
+
+
+def test_sd_builds_backprops_and_round_trips_depth(synthetic_data):
+    """SD (Dual, shallow depth-branch) coverage: the depth .npy round trip
+    through LoadDepthAsChannel/PackSegInputs, and a real forward+backward
+    pass through DualResNetV1c18. This is the only test that builds a real
+    4-channel input against the ported SD classes — before this, they had
+    zero in-repo forward-pass coverage; tools/replay.py's checkpoint replay
+    is a one-off verification artifact run against real data on the GPU
+    wrapper, not a test that runs in this suite.
+
+    A forward pass here is itself a meaningful check on `_sd_stem`'s
+    `depth_stage_strides` derivation: get that wrong (e.g. leave
+    DualResNetV1c18's dilated-backbone default `(2, 1, 1)` instead of this
+    project's non-dilated `(2, 2, 2)`) and CrossModalGating's
+    `rgb + d_proj * gate` raises a shape mismatch the moment the RGB and
+    depth streams' spatial sizes disagree at stage 2 or 3 — there's no way
+    to silently get the gate shapes wrong and still have this pass.
+    """
+    cfg = build_config(method='sd', backbone='resnet18',
+                       recipe='quick', data_root=str(synthetic_data), seed=31)
+    size = tuple(load_recipe('quick').data.size)
+
+    with chamnet.scoped(cfg):
+        dataset = DATASETS.build(cfg.train_dataloader['dataset'])
+        item = dataset[0]
+
+    inputs = item['inputs']
+    # 4 channels: 3 RGB + 1 depth, appended by LoadDepthAsChannel. The
+    # concatenation upcasts the whole array to the depth channel's float32
+    # (contrast BL's uint8 RGB-only inputs, asserted below) — an all-uint8
+    # result here would itself mean LoadDepthAsChannel silently no-opped.
+    assert inputs.shape == (4, *size)
+    assert inputs.dtype == torch.float32
+
+    with chamnet.scoped(cfg):
+        model = MODELS.build(cfg.model)
+    x = torch.randn(2, 4, 64, 128)
+    feats = model.backbone(x)
+    logits = model.decode_head(feats)
+    assert logits.shape[1] == 8
+    logits.sum().backward()
+    # Both streams must receive gradient: the RGB backbone (as BL's test
+    # above already checks) *and* the depth branch + fusion gates, which BL
+    # has none of. A depth path that forward()s fine but was never actually
+    # wired into the computation graph (e.g. depth_branch computed and
+    # discarded) would still pass BL-style coverage while training nothing
+    # on the depth side.
+    assert any(p.grad is not None for p in model.backbone.depth_branch.parameters())
+    assert any(p.grad is not None for p in model.backbone.fusions.parameters())
 
 
 def test_dataset_loads_synthetic_image_and_mask(synthetic_data):
@@ -40,10 +89,8 @@ def test_dataset_loads_synthetic_image_and_mask(synthetic_data):
 
     Scope note: 'bl' is RGB-only (data_channels=3 in build_config), so its
     pipeline has no LoadDepthAsChannel step — this test covers the image and
-    mask paths only. Depth (.npy) round-trip coverage needs a 4-channel
-    method (sd/hd/ef) and lands with Task 8, which is when those builders
-    exist; not overlooked, just not in scope for the BL-only smoke harness
-    Task 6 delivers.
+    mask paths only. Depth (.npy) round-trip coverage is
+    `test_sd_builds_backprops_and_round_trips_depth`, above.
     """
     cfg = build_config(method='bl', backbone='resnet18',
                        recipe='quick', data_root=str(synthetic_data), seed=31)
@@ -57,7 +104,7 @@ def test_dataset_loads_synthetic_image_and_mask(synthetic_data):
     # temporarily dropping this `with` block: KeyError, not in the
     # mmengine::transform registry) because it's only registered on mmseg's
     # child TRANSFORMS registry.
-    with DefaultScope.overwrite_default_scope(cfg.default_scope):
+    with chamnet.scoped(cfg):
         dataset = DATASETS.build(cfg.train_dataloader['dataset'])
         item = dataset[0]
 

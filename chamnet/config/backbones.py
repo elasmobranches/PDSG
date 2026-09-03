@@ -66,3 +66,15 @@ BACKBONES = {
         depth_mean_std=(2.263805360189078, 2.5188649864301693),
     ),
 }
+
+# SD (Dual, shallow depth-branch) backbone registry type per backbone. The
+# dual backbone classes hardcode their RGB stem to 3 input channels inside
+# __init__ and don't expose it as a config key at all — confirmed against
+# tests/fixtures/paper/sd_*.merged.py, none of which carry an 'in_channels'
+# key anywhere in the backbone dict.
+SD_TYPE = {
+    'resnet18': 'DualResNetV1c18',
+    'mit_b0': 'DualMiTB0',
+    'segnext_t': 'DualMSCAN',
+    'convnext_atto': 'DualConvNeXtAttoSerial',
+}
