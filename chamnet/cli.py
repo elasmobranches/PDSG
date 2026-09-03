@@ -140,12 +140,31 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.cmd == 'smoke':
         import subprocess
+        from pathlib import Path
+        # The test files ship in the source tree, not inside the installed
+        # package, so this command needs a checkout to point pytest at. Look
+        # where a caller plausibly is before giving up, and say what to do
+        # rather than letting pytest report a missing relative path.
+        candidates = [Path.cwd() / 'tests',
+                      Path(__file__).resolve().parent.parent / 'tests']
+        root = next((c.parent for c in candidates
+                     if (c / 'test_smoke.py').is_file()), None)
+        if root is None:
+            print(
+                "chamnet smoke runs this package's own test files. They ship in "
+                "the source tree\nrather than inside the installed package, and "
+                f"there is no tests/test_smoke.py\nunder {Path.cwd()}.\n\n"
+                "Run it from a checkout of the repository, or mount one into the "
+                "container:\n"
+                '  docker run --gpus all -v "$PWD:/workspace" <image> chamnet smoke',
+                file=sys.stderr)
+            return 2
         # --all runs the whole suite (every layout/dtype/registry check the
         # release ships), not just the BL synthetic-data smoke test; plain
         # `chamnet smoke` stays the fast single-file check.
         target = 'tests/' if a.all else 'tests/test_smoke.py'
-        args = ['-m', 'pytest', target, '-v']
-        return subprocess.call([sys.executable, *args])
+        return subprocess.call([sys.executable, '-m', 'pytest', target, '-v'],
+                               cwd=root)
 
     return 1
 
