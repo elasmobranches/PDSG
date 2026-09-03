@@ -1,8 +1,8 @@
-"""method × ablation 유효 조합. 스펙 §4.2 의 표가 유일한 출처."""
+"""method × ablation 유효 조합. 이 표가 유일한 출처."""
 
 VALID: set[tuple[str, str | None]] = {
     ('bl', None), ('ef', None), ('sd', None), ('hd', None),
-    # Task 11 에서 추가:
+    # 후속 작업에서 추가:
     # ('ef', 'shuffled'),
     # ('hd', 'shuffled'), ('hd', 'rgb'), ('hd', 'nogate'), ('hd', 'bigate'),
 }

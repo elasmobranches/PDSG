@@ -78,6 +78,44 @@ def test_sd_builds_backprops_and_round_trips_depth(synthetic_data):
     assert any(p.grad is not None for p in model.backbone.fusions.parameters())
 
 
+def test_hd_builds_and_backprops_through_both_encoders(synthetic_data):
+    """HD (Dual+, heavy depth-branch) forward/backward coverage.
+
+    HD replaces SD's small depthwise-separable depth branch with a second
+    full copy of the RGB architecture, so the two streams' stage resolutions
+    have to line up on their own rather than by construction. Wrong strides,
+    a wrong stage-dim table, or a dropped stem key that turned out not to be
+    the class default would all show up as a shape mismatch the first time
+    CrossModalGating computes `rgb + d_proj * gate`. Only a real forward pass
+    catches that; the fixture-equivalence tests compare dicts and would not.
+
+    Backbones: resnet18 for the stride/dilation geometry, and mit_b0 because
+    its config is the one whose backbone dict omits keys BL states explicitly
+    (see HD_STEM_DELTA) — if any of those omissions were not the class
+    default, this is where it would surface. segnext_t and convnext_atto are
+    left out because building the ConvNeXt one downloads timm weights inside
+    __init__; their depth-encoder behaviour is covered in
+    tests/test_ablation_semantics.py.
+    """
+    for backbone in ('resnet18', 'mit_b0'):
+        cfg = build_config(method='hd', backbone=backbone, recipe='quick',
+                           data_root=str(synthetic_data), seed=31)
+        with chamnet.scoped(cfg):
+            model = MODELS.build(cfg.model)
+        x = torch.randn(2, 4, 64, 128)
+        feats = model.backbone(x)
+        logits = model.decode_head(feats)
+        assert logits.shape[1] == 8, backbone
+        logits.sum().backward()
+        # The depth encoder is a whole second backbone; if it were computed
+        # and then discarded (or never wired into the gates), the forward
+        # pass would still succeed and only the gradient check would notice.
+        assert any(p.grad is not None
+                   for p in model.backbone.depth_backbone.parameters()), backbone
+        assert any(p.grad is not None
+                   for p in model.backbone.fusions.parameters()), backbone
+
+
 def test_dataset_loads_synthetic_image_and_mask(synthetic_data):
     """Exercise the real data path — LoadImageFromFile -> LoadAnnotations ->
     Resize -> PackSegInputs -> ChamNet.__getitem__ — against the synthetic

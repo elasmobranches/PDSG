@@ -21,22 +21,38 @@ on that server, with the dataset and checkpoints in place, it runs as:
 python3 tools/replay.py --out verification/replay.csv
 ```
 
-`--methods` defaults to the two training methods this package currently
-implements, `bl` and `sd`. The other two the underlying project defines,
-`ef` and `hd` (and every `hd`/`ef` ablation in the script's `WORK` table),
-aren't implemented in this package yet. `--all` replays every entry in
-`WORK` regardless, so it will fail past `bl`/`sd` until those land — this is
-a real, known limitation, not a bug to silently paper over.
+`--methods` defaults to the three training methods this package currently
+implements: `bl`, `sd` and `hd`. The fourth the underlying project defines,
+`ef`, and every `hd`/`ef` ablation in the script's `WORK` table, aren't
+implemented in this package yet. `--all` replays every entry in `WORK`
+regardless, so it will fail past `bl`/`sd`/`hd` until those land — this is a
+real, known limitation, not a bug to silently paper over.
 
 ## The tool exits 1 by design
 
 `tools/replay.py` gates on **both** mIoU and Pillar (Pillar is the paper's
 headline metric, and it can move further than mIoU on the same row — e.g.
 `bl/segnext_t` was 0.04 off on mIoU but 0.20 off on Pillar; gating on mIoU
-alone would have missed that). As of the run recorded in `replay.csv`, 6 of
-8 `bl`/`sd` combinations match `results_v8.csv` exactly (both metrics, to
-the file's own 2-decimal precision); the SegNeXt-T rows (`bl/segnext_t`,
-`sd/segnext_t`) do not, and **this is expected, not a defect**:
+alone would have missed that). Of the 12 `bl`/`sd`/`hd` combinations, three
+never match and one is a coin flip, for two separate and separately
+documented reasons: the three SegNeXt-T rows (`bl/segnext_t`,
+`sd/segnext_t`, `hd/segnext_t`), explained immediately below, and
+`bl/resnet18`'s Pillar, which lands on a 2-decimal rounding boundary — see
+"The `bl/resnet18` Pillar boundary" further down. Neither is a defect, and
+the tool reports both as failures rather than being tuned to hide them.
+
+**The printed pass count is therefore not deterministic.** It is 8/12 or
+9/12 depending purely on which side of that boundary the ResNet row happens
+to land on in a given run; the committed `replay.csv` shows one of the two
+and a fresh run may legitimately show the other, with no code change and no
+significance. The eight rows that always match are the eight that carry the
+evidence.
+
+Every `hd` row except SegNeXt-T matches exactly on both metrics
+(`hd/resnet18` 81.88/84.01, `hd/mit_b0` 80.52/79.02, `hd/convnext_atto`
+81.18/79.19 mIoU/Pillar), which is the evidence that porting the HD
+backbones and their pretrained depth transfer did not change what those
+models compute.
 
 `LightHamHead`'s `NMF2D._build_bases` (`mmseg/models/decode_heads/ham_head.py`,
 lines 89-90 and 123) calls `torch.rand((B * S, D, R))` **unconditionally on
@@ -51,7 +67,14 @@ used, vs. this replay's `seed=37`) moved the observed gap from 0.04/0.20
 (mIoU/Pillar) to 0.01/0.11 — closer, in the expected direction, but still
 not exact, because seeding `torch.manual_seed` doesn't reconstruct the exact
 sequence of prior RNG calls a *different process* had made by the time
-`_build_bases` runs.
+`_build_bases` runs. Consistent with that explanation, the SegNeXt-T rows
+are stable *replay-to-replay* — two consecutive replays reproduced all three
+to the last digit (`bl` 80.76/77.63, `sd` 80.54/80.47, `hd` 80.52/82.21
+mIoU/Pillar) while still differing from the recorded numbers by 0.03-0.10
+mIoU and 0.10-0.20 Pillar. Two fresh processes doing the same work in the
+same order draw the same random bases; the process that produced
+`results_v8.csv` ran its test loop at the end of a training run, with a very
+different amount of RNG already consumed.
 
 What this artifact can and can't support: it is a code-equivalence check —
 evidence that this port computes the same thing the original code did, for
@@ -63,15 +86,72 @@ numbers being defended, which is outside what a single-checkpoint replay
 can establish. What it does support: **SegNeXt-T evaluation is not exactly
 reproducible even with fixed weights**, so nobody should expect a future
 replay run's SegNeXt-T row to match `results_v8.csv` bit-for-bit — a small,
-bounded gap on those two rows specifically is the expected outcome, and the
-tool's exit code reflects that honestly rather than being tuned to always
-report success.
+bounded gap on those three rows specifically is the expected outcome, and
+the tool's exit code reflects that honestly rather than being tuned to
+always report success.
 
-The three other backbones (`resnet18`, `mit_b0`, `convnext_atto`) have also
-shown small single-row differences in some replay runs — up to about 0.01
-on either metric, on one row at a time — that later reruns did not
-reproduce (the same row landing at exactly 0.00 on a subsequent run with no
-code change in between). This is ordinary GPU/cudnn non-determinism under
+## The `bl/resnet18` Pillar boundary
+
+This row reads 79.99 against a recorded 80.00 in some runs and matches at
+80.00 in others, with no code change in between. That is not a 0.01
+regression that comes and goes; the underlying number barely moves at all,
+and it is worth being precise about what does.
+
+`IoUMetric` reports IoU as a ratio of integer pixel counts accumulated over
+the split, rounded to two decimals. Those raw counts are not in the metric's
+output — `tools/replay.py` records the rounded value, like `results_v8.csv`
+does — so the table below came from a throwaway subclass of
+`IoUMetricWithPerClass` that printed the accumulated `area_intersect` /
+`area_union` before rounding. **That instrumentation is not shipped**: it
+was a one-off diagnostic, and this table cannot be reproduced from
+`tools/replay.py` as it stands without re-adding it. Over six *separate
+processes* running the identical replay:
+
+```
+intersect  union     IoU (%)       rounded
+1456721    1821017   79.99491493   79.99
+1456720    1821015   79.99494787   79.99
+1456721    1821015   79.99500279   80.00
+1456720    1821015   79.99494787   79.99
+1456721    1821017   79.99491493   79.99
+1456726    1821014   79.99532129   80.00
+```
+
+Two things follow. First, the run-to-run spread is about six pixels in 1.46
+million and 0.0004 percentage points of IoU — an order of magnitude below
+even the ~0.01 jitter described below, and far below anything that could
+matter. Second, that tiny band straddles 79.995, the point where `round(x,
+2)` switches between 79.99 and 80.00. So the rounded value flips (here, four
+runs to two) while the quantity being rounded is effectively constant.
+
+How far apart the replay and the original actually are cannot be pinned down
+from the artifact, and it is worth stating the bound honestly rather than
+the flattering half of it. A recorded 80.00 means the original run's raw
+value lay somewhere in `[79.995, 80.005)`. Against the lowest value observed
+here, 79.99491, the true disagreement could be anywhere from **0 up to
+0.0101 percentage points** — 0 because two of the six observations are
+themselves above 79.995 and would agree with the original exactly at two
+decimals, and 0.0101 because the original could have sat just under 80.005.
+(An earlier version of this section quoted 0.005, which is the distance to
+the *rounding boundary*, not to the widest admissible original — an
+understatement, in the reassuring direction.) `results_v8.csv` stores two
+decimals, so there is no more precise recorded number to compare against and
+the range cannot be narrowed further. What can be said is that the bound is
+comparable to the ~0.01 cudnn jitter described below and nowhere near the
+SegNeXt-T gap.
+
+Repeated runs were used to characterise the flutter, **not** to pick one.
+`bl` is also untouched by the HD code added alongside this `replay.csv`, and
+the config `build_config` emits for it is unchanged
+(`tests/test_matches_paper.py` compares it to the paper's own merged config
+key for key), so this row's inputs did not change.
+
+Anything genuinely larger than this on `resnet18`, `mit_b0` or
+`convnext_atto` would not fit the pattern. Those three backbones have shown
+small single-row differences in some replay runs — up to about 0.01 on
+either metric, on one row at a time — that later reruns did not reproduce
+(the same row landing at exactly 0.00 on a subsequent run with no code
+change in between). This is ordinary GPU/cudnn non-determinism under
 `deterministic=False` and `cudnn_benchmark=True`: forcing full determinism
 (`cudnn.deterministic=True`, `cudnn.benchmark=False`) and disabling TF32
 did not remove it, which shows that bit-exact determinism isn't available

@@ -78,3 +78,56 @@ SD_TYPE = {
     'segnext_t': 'DualMSCAN',
     'convnext_atto': 'DualConvNeXtAttoSerial',
 }
+
+# HD (Dual+, heavy depth-branch) backbone registry type per backbone. Where SD
+# runs a ~0.2-0.4M depthwise-separable DepthBranch on the depth channel, HD runs
+# a second copy of the full RGB architecture on it.
+HD_TYPE = {
+    'resnet18': 'DualResNetV1c18LateFusion',
+    'mit_b0': 'DualMiTB0LateFusion',
+    'segnext_t': 'DualMSCANLateFusion',
+    # Note: the ConvNeXt HD class lives in the same source module as the SD one
+    # (dual_convnext_serial.py upstream, chamnet/models/backbones/convnext.py
+    # here) — not in a '*_late' module like the other three.
+    'convnext_atto': 'DualConvNeXtAttoPlusSerial',
+}
+
+# How each HD backbone dict differs from the BL dict for the same backbone,
+# read straight off tests/fixtures/paper/hd_*.merged.py. `drop` keys are
+# removed from the BL stem, `add` keys are merged in; the builder then sets
+# `type`, `depth_pretrained` and `init_cfg` itself.
+#
+# Three of the four are BL + fusion_reduction. mit_b0 is not, because the
+# paper's HD MiT config was hand-written from the upstream SegFormer reference
+# rather than derived from this project's own BL config: it spells out two
+# MixVisionTransformer constructor defaults (act_cfg, norm_cfg) and leaves
+# three others implicit (in_channels, num_stages, patch_sizes) — and it never
+# passes fusion_reduction at all, taking DualMiTB0LateFusion's own default of
+# 4. Every dropped key equals the class default, so the built model is the
+# same architecture either way; the difference is only in which keys are
+# written down, and it is reproduced literally because build_config's output
+# is compared against that config key for key. The "these really are the
+# defaults" claim is not left as a comment — tests/test_matches_paper.py
+# checks it against MixVisionTransformer's actual signature.
+HD_STEM_DELTA = {
+    'resnet18': dict(drop=(), add=dict(fusion_reduction=4)),
+    'mit_b0': dict(drop=('in_channels', 'num_stages', 'patch_sizes'),
+                   add=dict(norm_cfg=dict(type='LN', eps=1e-6),
+                            act_cfg=dict(type='GELU'))),
+    'segnext_t': dict(drop=(), add=dict(fusion_reduction=4)),
+    # convnext_atto is not derived from its BL stem at all: like the SD class,
+    # DualConvNeXtAttoPlusSerial calls timm.create_model itself and takes only
+    # fusion_reduction / depth_pretrained / init_cfg. See _hd_stem.
+}
+
+# Optimizer keys the paper's HD config for a backbone spells out where its BL
+# and SD configs for the same backbone leave them implicit. Only one exists:
+# HD MiT-B0's optimizer states betas explicitly. That value is AdamW's own
+# default, so it changes nothing about the optimizer that gets built — it is
+# emitted only so the released builder reproduces that config exactly rather
+# than nearly. tests/test_matches_paper.py asserts it against torch's actual
+# AdamW default, so if torch ever changed that default this stops being a
+# cosmetic difference and the suite says so instead of silently drifting.
+HD_OPTIM_EXTRA = {
+    'mit_b0': dict(betas=(0.9, 0.999)),
+}

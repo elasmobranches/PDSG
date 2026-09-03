@@ -1,9 +1,9 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 """ChamNetSegDataPreProcessor — fixes a >3-channel bgr_to_rgb no-op.
 
-Ported verbatim (docstring, body, everything) from
-mmsegmentation_blackwell's mmseg/models/data_preprocessor.py, which patches
-vanilla mmseg's own SegDataPreProcessor in place. The two differ in exactly
+Ported verbatim (docstring, body, everything) from the research fork the
+paper's checkpoints were trained in, which patches vanilla mmseg's own
+mmseg/models/data_preprocessor.py in place. The two differ in exactly
 one place, called out in the comment inside `forward` below: vanilla mmseg
 checks ``inputs[0].size(0) == 3`` before doing the BGR->RGB channel swap, so
 bgr_to_rgb silently becomes a no-op for any 4+ channel input (sd/hd/ef's

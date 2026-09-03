@@ -1,4 +1,4 @@
-# commit=05545a7 date=2026-09-01T11:04:09.237404+00:00 gpu='NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition' torch=2.9.0a0+50eac811a6.nv25.09 mmseg=1.2.2
+# commit=9cb489b date=2026-09-02T03:02:24.396864+00:00 gpu='NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition' torch=2.9.0a0+50eac811a6.nv25.09 mmseg=1.2.2
 method,backbone,ablation,replay_mIoU,recorded_mIoU,replay_pillar,recorded_pillar
 bl,resnet18,-,80.95,80.95,80.0,80.0
 bl,mit_b0,-,79.48,79.48,76.05,76.05
@@ -8,3 +8,7 @@ sd,resnet18,-,82.09,82.09,83.75,83.75
 sd,mit_b0,-,79.32,79.32,80.4,80.4
 sd,segnext_t,-,80.54,80.51,80.47,80.29
 sd,convnext_atto,-,81.03,81.03,82.64,82.64
+hd,resnet18,-,81.88,81.88,84.01,84.01
+hd,mit_b0,-,80.52,80.52,79.02,79.02
+hd,segnext_t,-,80.52,80.62,82.21,82.31
+hd,convnext_atto,-,81.18,81.18,79.19,79.19

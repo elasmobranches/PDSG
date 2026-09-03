@@ -31,9 +31,13 @@ Parameter count (ResNet-18 config):
 
 Ported verbatim from mmsegmentation/mmseg/models/backbones/dual_resnet.py —
 only the imports changed: CrossModalGating and _DWBlock now come from
-chamnet.models.fusion (Task 7 moved them there out of dual_mit.py), and
+chamnet.models.fusion (this package's single home for them, moved there out
+of dual_mit.py), and
 ResNetV1c comes from mmseg's own backbones module instead of a sibling file
 in the same package. No class body was modified during the move.
+
+The HD (Dual+) sibling backbone, DualResNetV1c18LateFusion, is appended
+below from dual_resnet_late.py; see the section comment above it.
 """
 
 import torch
@@ -204,6 +208,246 @@ class DualResNetV1c18(ResNetV1c):
             rgb = res_layer(rgb)
             # Depth-guided cross-modal gating (residual addition)
             rgb = self.fusions[i](rgb, depth_feats[i])
+            if i in self.out_indices:
+                outs.append(rgb)
+
+        return tuple(outs)
+
+
+# ---------------------------------------------------------------------------
+# HD (Dual+, heavy depth-branch): full ResNetV1c on the depth stream
+#
+# Ported verbatim from
+# mmsegmentation/mmseg/models/backbones/dual_resnet_late.py — only the imports
+# changed (CrossModalGating from chamnet.models.fusion, ResNetV1c from mmseg's
+# own backbones module). That file's other two classes,
+# DualResNetV1c18LateFusionRGB and DualResNetV1c18BiCMG, are ablations that
+# belong to a later task and are not ported here. No class body was modified
+# during the move.
+# ---------------------------------------------------------------------------
+
+_RESNET_STAGE_DIMS = {
+    18:  (64, 128, 256, 512),
+    34:  (64, 128, 256, 512),
+    50:  (256, 512, 1024, 2048),
+    101: (256, 512, 1024, 2048),
+    152: (256, 512, 1024, 2048),
+}
+
+
+@MODELS.register_module()
+class DualResNetV1c18LateFusion(ResNetV1c):
+    """Full dual-encoder ResNet-18 backbone with Serial Fusion.
+
+    Both RGB and Depth streams use the full ResNetV1c-18 architecture.
+    After each RGB ResLayer, CrossModalGating injects depth features as a
+    residual; the gated output feeds directly into the next layer
+    (stage-by-stage serial injection).
+
+    DualResNetV1c18 대비 차이: depth 스트림을 DepthBranchResNet 대신
+    full ResNetV1c(1ch)로 처리. 주입 메커니즘(serial)은 동일.
+
+    Usage in config::
+
+        backbone=dict(
+            type='DualResNetV1c18LateFusion',
+            depth=18,
+            num_stages=4,
+            out_indices=(0, 1, 2, 3),
+            dilations=(1, 1, 2, 4),
+            strides=(1, 2, 1, 1),
+            norm_cfg=norm_cfg,
+            norm_eval=False,
+            style='pytorch',
+            contract_dilation=True,
+            fusion_reduction=4,
+            init_cfg=dict(type='Pretrained', checkpoint='open-mmlab://resnet18_v1c'))
+    """
+
+    def __init__(self, fusion_reduction: int = 4, fusion_use_gate: bool = True,
+                 fusion_gate_type: str = 'channel', fusion_pool_mode: str = 'both',
+                 fusion_stages=(0, 1, 2, 3), depth_proj_zero_init: bool = False,
+                 fusion_gate_cond: str = 'depth',
+                 fusion_gate_bias: bool = False,
+                 fusion_gate_init=None,
+                 fusion_gate_fixed=None,
+                 fusion_proj_type: str = 'conv1x1',
+                 fusion_spatial_residual: bool = False,
+                 fusion_lambda_c: float = 0.5,
+                 fusion_lambda_s: float = 0.5,
+                 fusion_gate_dw: bool = False,
+                 depth_pretrained: bool = False,
+                 depth_in_channels: int = 1,
+                 **kwargs):
+        # RGB stream always 3ch
+        kwargs['in_channels'] = 3
+        super().__init__(**kwargs)
+
+        depth_val = kwargs.get('depth', 18)
+        self.STAGE_DIMS = _RESNET_STAGE_DIMS[depth_val]
+        self.depth_pretrained = depth_pretrained
+        # 1 for a raw metric depth map, 3 for HHA. Stays 1 by default so the
+        # v12 configs are untouched. forward() slices the geometry channels off
+        # the input using this, so it has to match what the pipeline stacked on.
+        self.depth_in_channels = depth_in_channels
+
+        # Full depth ResNetV1c (1ch stem). Random init by default; when
+        # depth_pretrained=True, init_weights() below loads the same
+        # ImageNet checkpoint as the RGB stream into depth_backbone too,
+        # channel-averaging stem.0 (3ch->1ch) since the checkpoint was
+        # trained on RGB.
+        depth_kwargs = dict(kwargs)
+        depth_kwargs['in_channels'] = depth_in_channels
+        depth_kwargs['init_cfg'] = None        # weight loading handled in init_weights()
+        depth_kwargs['out_indices'] = (0, 1, 2, 3)  # all stages
+        self.depth_backbone = ResNetV1c(**depth_kwargs)
+
+        # Serial CrossModalGating × 4 (use_gate=False면 단순 additive fusion)
+        self.fusions = nn.ModuleList([
+            CrossModalGating(dim, reduction=fusion_reduction,
+                             use_gate=fusion_use_gate,
+                             gate_type=fusion_gate_type,
+                             pool_mode=fusion_pool_mode,
+                             depth_proj_zero_init=depth_proj_zero_init,
+                             gate_cond=fusion_gate_cond,
+                             gate_bias=fusion_gate_bias,
+                             gate_init=(None if fusion_gate_init is None
+                                        else fusion_gate_init[i]),
+                             fixed_gate=fusion_gate_fixed,
+                             proj_type=fusion_proj_type,
+                             spatial_residual=fusion_spatial_residual,
+                             lambda_c=fusion_lambda_c,
+                             lambda_s=fusion_lambda_s,
+                             gate_dw=fusion_gate_dw)
+            for i, dim in enumerate(self.STAGE_DIMS)
+        ])
+        self.fusion_stages = tuple(fusion_stages)
+
+        print_log(
+            '[DualResNetV1c18LateFusion] RGB ResNetV1c: pretrained init. '
+            'Depth ResNetV1c (1ch): random init. Serial stage-by-stage injection. '
+            f'Stage dims: {self.STAGE_DIMS}, gate_type={fusion_gate_type}, '
+            f'pool_mode={fusion_pool_mode}',
+            logger='current')
+
+    def init_weights(self):
+        """Load pretrained ResNetV1c for RGB; randomly init depth + fusion
+        (unless depth_pretrained=True, see below)."""
+        cfg = self.init_cfg
+        if isinstance(cfg, list):
+            cfg = cfg[0] if cfg else None
+        if cfg is not None and cfg.get('type') == 'Pretrained':
+            checkpoint_path = cfg['checkpoint']
+            checkpoint = _load_checkpoint(checkpoint_path, map_location='cpu')
+            state_dict = checkpoint.get('state_dict', checkpoint)
+            # strict=False: depth_backbone.* and fusions.* absent in checkpoint
+            load_state_dict(self, state_dict, strict=False, logger='current')
+            print_log(
+                '[DualResNetV1c18LateFusion] RGB ResNetV1c loaded from pretrained. '
+                'Depth ResNetV1c and CrossModalGating: random init.',
+                logger='current')
+
+            if self.depth_pretrained:
+                self._load_pretrained_depth(state_dict)
+        else:
+            super().init_weights()
+
+    def _load_pretrained_depth(self, state_dict):
+        """Load the same ImageNet checkpoint into depth_backbone.
+
+        stem.0.weight is (out,3,3,3) in the checkpoint. How it transfers
+        depends on what the depth branch takes:
+
+        depth_in_channels=1 (a raw metric depth map): average across the input
+            channels so the 1ch conv starts from the mean of the three
+            pretrained RGB filters, which preserves activation scale. The
+            standard RGB->1ch transfer trick.
+        depth_in_channels=3 (HHA): copy straight across. HHA is a 3-channel
+            image-like input, so this is the same kind of init the RGB stream
+            gets, with no adaptation.
+
+        Worth noting when reading HHA-versus-raw results: the 3-channel case
+        gets a truer pretrained init than the channel-averaged 1-channel case.
+        A 1ch input cannot use a 3ch stem directly, so this asymmetry is
+        inherent to the comparison rather than a choice -- it is much smaller
+        than a random-versus-pretrained difference would be, but it does mean
+        HHA benefits marginally more from pretraining than raw depth does.
+        """
+        n_geo = self.depth_in_channels
+        if n_geo not in (1, 3):
+            raise ValueError(
+                f'depth_pretrained=True supports depth_in_channels of 1 or 3, '
+                f'got {n_geo}: there is no sensible transfer of a 3-channel '
+                f'stem to {n_geo} channels.')
+
+        depth_state_dict = {}
+        for k, v in state_dict.items():
+            if k == 'stem.0.weight' and v.dim() == 4 and v.shape[1] == 3 \
+                    and n_geo == 1:
+                v = v.mean(dim=1, keepdim=True)  # (out,3,3,3) -> (out,1,3,3)
+            depth_state_dict[k] = v
+
+        norm_before = self.depth_backbone.stem[0].weight.detach().norm().item()
+        missing, unexpected = self.depth_backbone.load_state_dict(
+            depth_state_dict, strict=False)
+        norm_after = self.depth_backbone.stem[0].weight.detach().norm().item()
+
+        # depth_backbone has no 'fc' (classification head) -> expected unexpected keys.
+        real_unexpected = [k for k in unexpected if not k.startswith('fc.')]
+        matched = len(state_dict) - len(unexpected)
+        if norm_before == norm_after or matched < 50:
+            raise RuntimeError(
+                f'[DualResNetV1c18LateFusion] depth_pretrained=True but weight '
+                f'load looks like a no-op (stem.0 norm {norm_before:.4f} -> '
+                f'{norm_after:.4f}, matched {matched}/{len(state_dict)} keys, '
+                f'missing={len(missing)}, unexpected={real_unexpected[:5]}). '
+                f'Refusing to silently train on random-init depth weights.')
+        how = ('stem.0 3ch->1ch channel-averaged' if n_geo == 1
+               else 'stem.0 3ch copied directly')
+        print_log(
+            f'[DualResNetV1c18LateFusion] Depth ResNetV1c: pretrained init '
+            f'({how}, depth_in_channels={n_geo}). matched={matched}/'
+            f'{len(state_dict)} keys, stem.0 norm {norm_before:.4f} -> '
+            f'{norm_after:.4f}.',
+            logger='current')
+
+    def forward(self, x: torch.Tensor):
+        """
+        Args:
+            x: (B, 3+depth_in_channels, H, W) — BGR followed by the geometry
+                channels the pipeline stacked on: depth (1) or HHA (3).
+        Returns:
+            Tuple of feature maps at out_indices stages (depth-injected).
+        """
+        n_geo = self.depth_in_channels
+        expected = 3 + n_geo
+        if x.shape[1] != expected:
+            raise ValueError(
+                f'{self.__class__.__name__} expects {expected} input channels '
+                f'(3 RGB + {n_geo} geometry) but got {x.shape[1]}. Check that '
+                f'depth_in_channels matches the loader in the config.')
+        rgb   = x[:, :3]              # (B, 3, H, W)
+        depth = x[:, 3:3 + n_geo]     # (B, n_geo, H, W)
+
+        # Pre-compute all depth features (full ResNetV1c forward, all 4 stages)
+        depth_feats = self.depth_backbone(depth)  # tuple of 4 NCHW tensors
+
+        # RGB stem + maxpool
+        if self.deep_stem:
+            rgb = self.stem(rgb)
+        else:
+            rgb = self.relu(self.norm1(self.conv1(rgb)))
+        rgb = self.maxpool(rgb)
+
+        # RGB stage-by-stage serial injection
+        outs = []
+        for i, layer_name in enumerate(self.res_layers):
+            res_layer = getattr(self, layer_name)
+            rgb = res_layer(rgb)
+            # Depth-guided serial gating (residual); stages outside
+            # fusion_stages stay pure RGB.
+            if i in self.fusion_stages:
+                rgb = self.fusions[i](rgb, depth_feats[i])
             if i in self.out_indices:
                 outs.append(rgb)
 

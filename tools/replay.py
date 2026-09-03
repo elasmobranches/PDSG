@@ -4,8 +4,10 @@
 바꾸지 않았다는 뜻이다. 리팩터링(fusion.py 분리)을 검증하는 것이 주 목적이다.
 
 사용법과 알려진 한계는 verification/README.md 를 먼저 읽을 것 — 특히 이
-스크립트가 **의도적으로 exit 1** 하는 이유(SegNeXt-T LightHamHead 의
-rand_init=True)와, --all 이 아직 이식되지 않은 ef/hd 조합에서 실패하는 이유.
+스크립트가 **의도적으로 exit 1** 하는 두 이유(SegNeXt-T LightHamHead 의
+rand_init=True, 그리고 bl/resnet18 Pillar 가 소수점 2자리 반올림 경계인
+79.995 에 걸쳐 있는 것)와, --all 이 아직 이식되지 않은 ef 및 ablation
+조합에서 실패하는 이유.
 """
 import argparse
 import contextlib
@@ -86,14 +88,14 @@ WORK = {  # (method, ablation) -> 원본 work_dir 과 flow 이름
     ('hd', 'rgb'):       ('work_dirs_v12+_512_controls', 'dual_plus_rgb'),
     ('ef', 'shuffled'):  ('work_dirs_v12+_512_ef_controls', 'proposed_shuffled'),
 }
-# ef/hd (plain and every ablation) aren't ported into chamnet yet -- that's
-# Tasks 9-12, not this one. Attempting them today builds a config that loads
-# a 3-channel pretrained checkpoint into an incorrectly-widened 4-channel
-# stem and crashes on the shape mismatch. `--methods` therefore defaults to
-# only what's actually implemented; `--all` still means "every WORK entry"
-# for when those tasks land, so it will fail past bl/sd until then -- see
-# verification/README.md.
-IMPLEMENTED_METHODS = ('bl', 'sd')
+# `ef`, and every `hd`/`ef` ablation above, aren't ported into chamnet yet.
+# Attempting `ef` today builds a config that loads a 3-channel pretrained
+# checkpoint into an incorrectly-widened 4-channel stem and crashes on the
+# shape mismatch; the ablations have no registered backbone at all.
+# `--methods` therefore defaults to only what's actually implemented; `--all`
+# still means "every WORK entry" for when the rest lands, so it will fail
+# past bl/sd/hd until then -- see verification/README.md.
+IMPLEMENTED_METHODS = ('bl', 'sd', 'hd')
 EXT = {'segnext_t': '_ext', 'convnext_atto': '_ext'}        # 확장 sweep 접미사
 
 
@@ -101,8 +103,8 @@ def _use_original_val_test_layout(dataloader_cfg):
     """Point val/test at the exact files the paper's own test run read.
 
     build_config's dataloader always points at 'masks' + depth_suffix='.npy'
-    — correct for the release's own unified data layout (spec §4.3), which
-    normalises away the paper's inconsistent depth_suffix/mask-folder naming
+    — correct for the release's own unified data layout, which normalises
+    away the paper's inconsistent depth_suffix/mask-folder naming
     on the assumption that a properly migrated copy carries the same content
     under the new names. /data/real_dataset_v12_plus is not that migrated
     copy — it's the original, un-migrated paper dataset, val/test depth
@@ -209,6 +211,16 @@ if __name__ == '__main__':
     # it moves further than mIoU on the same rows -- e.g. bl/segnext_t was
     # 0.04 off on mIoU but 0.20 off on Pillar. Gating on mIoU alone would
     # have let that pass unnoticed.
+    #
+    # The gate stays at 1e-3 (i.e. "equal at the 2 decimals results_v8.csv
+    # stores") deliberately. Two row classes are expected to fail it and are
+    # documented in verification/README.md rather than tolerated here:
+    # SegNeXt-T's RNG-dependent decode head, and bl/resnet18's Pillar, whose
+    # raw value straddles the 79.995 rounding boundary so the second decimal
+    # flips between runs while the quantity itself moves by ~6 pixels in
+    # 1.46M -- which also makes the printed pass count 8/12 or 9/12 depending
+    # on the run. Widening the gate to absorb either would also stop it
+    # catching a real regression of the same size.
     bad = [r for r in rows
            if abs(r['replay_mIoU'] - r['recorded_mIoU']) > 1e-3
            or abs(r['replay_pillar'] - r['recorded_pillar']) > 1e-3]

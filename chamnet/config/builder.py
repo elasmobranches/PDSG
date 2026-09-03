@@ -6,7 +6,8 @@ from pathlib import Path
 
 from mmengine.config import Config
 
-from chamnet.config.backbones import BACKBONES, NORM, SD_TYPE
+from chamnet.config.backbones import (BACKBONES, HD_OPTIM_EXTRA, HD_STEM_DELTA,
+                                      HD_TYPE, NORM, SD_TYPE)
 from chamnet.config.combos import validate
 from chamnet.config.schema import Recipe, load_recipe
 
@@ -105,6 +106,44 @@ def _sd_stem(backbone: str, bl_stem: dict, pretrained, stem_channels: int):
     return stem
 
 
+def _hd_stem(backbone: str, bl_stem: dict, pretrained, stem_channels: int,
+             depth_pretrained: bool):
+    """Build the HD (Dual+, heavy depth-branch) backbone stem for `backbone`.
+
+    Same shape of derivation as `_sd_stem`: start from the BL stem for the
+    same backbone, since the RGB half of an HD backbone *is* the BL backbone,
+    then apply the per-backbone delta recorded in `HD_STEM_DELTA` (read off
+    tests/fixtures/paper/hd_*.merged.py, which is the truth if this ever
+    disagrees).
+
+    `stem_channels` is checked rather than used, for the same reason as in
+    `_sd_stem`: every HD class hardcodes its RGB stream to 3 channels
+    internally (DualResNetV1c18LateFusion sets `kwargs['in_channels'] = 3`,
+    DualMiTB0LateFusion pops the key outright) and consumes the 4th channel
+    through a separate depth encoder, so there is no config key to set it on.
+    Raising rather than asserting keeps the invariant enforced under
+    `python -O`.
+    """
+    if stem_channels != 3:
+        raise ValueError(
+            f'HD backbones always take a 3-channel RGB stem; got {stem_channels}')
+    if backbone == 'convnext_atto':
+        # DualConvNeXtAttoPlusSerial calls timm.create_model itself for both
+        # streams, so none of TIMMBackbone's config keys (the BL stem) apply.
+        return dict(type=HD_TYPE[backbone], fusion_reduction=4,
+                    depth_pretrained=depth_pretrained)
+    delta = HD_STEM_DELTA[backbone]
+    stem = copy.deepcopy(bl_stem)
+    for key in delta['drop']:
+        stem.pop(key, None)
+    stem.update(copy.deepcopy(delta['add']))
+    stem['type'] = HD_TYPE[backbone]
+    stem['depth_pretrained'] = depth_pretrained
+    if pretrained:
+        stem['init_cfg'] = dict(type='Pretrained', checkpoint=pretrained)
+    return stem
+
+
 def _pipelines(r: Recipe, data_channels, shuffle):
     load_depth = dict(type='LoadDepthAsChannel', depth_dir_name='depth',
                       depth_suffix='.npy', img_dir_name='images', max_depth=None)
@@ -155,9 +194,8 @@ def build_config(method: str, backbone: str, ablation: str | None = None,
     # data_channels: width of the tensor the pipeline loads and the
     # preprocessor normalises (RGB, or RGB+D once a run trains on depth).
     # stem_channels: the input width of the backbone actually swapped in.
-    # ef is NOT implemented yet (that's Task 10, not this one -- despite what
-    # an earlier version of this comment claimed). Task 10's fixtures show ef
-    # does NOT feed RGB+D into the plain 3ch backbone class either: it uses
+    # ef is NOT implemented yet. Its own merged configs show it does NOT feed
+    # RGB+D into the plain 3ch backbone class either: it uses
     # dedicated 4-channel-native classes (ResNetV1c4Ch, MixVisionTransformer4Ch,
     # MSCAN4Ch, TIMMBackbone4Ch), each built with extra_channel_init='mean' --
     # so data_channels == stem_channels for ef too, just via a different stem
@@ -173,6 +211,9 @@ def build_config(method: str, backbone: str, ablation: str | None = None,
 
     if method == 'sd':
         stem = _sd_stem(backbone, spec['stem'], spec['pretrained'], stem_channels)
+    elif method == 'hd':
+        stem = _hd_stem(backbone, spec['stem'], spec['pretrained'], stem_channels,
+                        r.hd.depth_pretrained)
     else:
         stem = copy.deepcopy(spec['stem'])
         if 'in_channels' in stem:
@@ -186,16 +227,25 @@ def build_config(method: str, backbone: str, ablation: str | None = None,
     model = dict(type='EncoderDecoder', data_preprocessor=preproc,
                  backbone=stem, decode_head=_decode_head(spec, r),
                  train_cfg=dict(), test_cfg=dict(mode='whole'))
-    # The legacy top-level `pretrained` arg on EncoderDecoder is only set in the
-    # source configs for backbones loaded via init_cfg; TIMMBackbone (convnext_atto)
-    # loads its own weights and never carries this key — confirmed in its fixture.
-    if spec['pretrained']:
+    # The legacy top-level `pretrained` arg on EncoderDecoder is a no-op when it
+    # is None (EncoderDecoder only forwards it to the backbone when it is set),
+    # so where it appears is purely a fact about which hand-written config each
+    # lineage descends from. It appears in every paper config except BL's and
+    # SD's ConvNeXt ones — TIMMBackbone loads its own weights and those two
+    # configs never bothered to write the key — while HD's ConvNeXt config,
+    # written separately, does carry it. Confirmed key-by-key across all twelve
+    # fixtures; emitted to match them rather than normalised away.
+    if spec['pretrained'] or method == 'hd':
         model['pretrained'] = None
     aux = _aux_head(spec, r)
     if aux is not None:
         model['auxiliary_head'] = aux
 
     optim = r.optim_for(backbone)
+    if method == 'hd':
+        # See HD_OPTIM_EXTRA: HD MiT-B0's config states AdamW's default betas
+        # explicitly where BL's and SD's leave them implicit.
+        optim.update(copy.deepcopy(HD_OPTIM_EXTRA.get(backbone, {})))
     paramwise = optim.pop('paramwise_cfg')
     extra = spec.get('paramwise_extra')
     if extra:

@@ -34,10 +34,9 @@ Stage dims (ConvNeXt-Atto): [40, 80, 160, 320]
 Ported verbatim from
 mmsegmentation/mmseg/models/backbones/dual_convnext_serial.py — only the
 imports changed: DepthBranch and CrossModalGating now come from
-chamnet.models.fusion (Task 7 moved them there). DualConvNeXtAttoPlusSerial,
-the HD (Dual+) sibling class defined in the same source file, was not
-ported — it belongs to a later task. No class body was modified during
-the move.
+chamnet.models.fusion. Its HD (Dual+) sibling from the same source file,
+DualConvNeXtAttoPlusSerial, is ported below it. No class body was modified
+during the move.
 """
 
 try:
@@ -143,3 +142,108 @@ class DualConvNeXtAttoSerial(BaseModule):
             outs.append(feat)
 
         return outs  # [(B,40,H/4), (B,80,H/8), (B,160,H/16), (B,320,H/32)]
+
+
+# ---------------------------------------------------------------------------
+# HD (Dual+, heavy depth-branch): full ConvNeXt-Atto on the depth stream
+#
+# Ported verbatim from the same source file as DualConvNeXtAttoSerial above,
+# mmsegmentation/mmseg/models/backbones/dual_convnext_serial.py — only the
+# imports changed (CrossModalGating from chamnet.models.fusion). No class body
+# was modified during the move.
+# ---------------------------------------------------------------------------
+
+
+@MODELS.register_module()
+class DualConvNeXtAttoPlusSerial(BaseModule):
+    """Dual+ serial backbone: full ConvNeXt-Atto for both RGB and Depth.
+
+    RGB stream:   ConvNeXt-Atto (timm pretrained, 3ch) — stage-by-stage serial loop
+    Depth stream: ConvNeXt-Atto (random init, 1ch)     — full forward → [d0,d1,d2,d3]
+    Fusion:       CrossModalGating at every stage (serial injection)
+
+    DualConvNeXtAttoSerial 대비 차이:
+      - Dual  (Serial):      DepthBranch (~0.4M DW-sep)
+      - Dual+ (PlusSerial):  Full ConvNeXt-Atto (~3.7M, 1ch)
+
+    파라미터:
+      RGB ConvNeXt-Atto   ~3.7M  (timm pretrained)
+      Depth ConvNeXt-Atto ~3.7M  (random init, 1ch stem)
+      CrossModalGating ×4 ~0.3M  (random init)
+      ─────────────────────────────────────
+      Total backbone      ~7.7M
+    """
+
+    STAGE_DIMS = (40, 80, 160, 320)
+
+    def __init__(self, fusion_reduction: int = 4, depth_pretrained: bool = False,
+                 init_cfg=None):
+        if timm is None:
+            raise RuntimeError('timm is not installed')
+        super().__init__(init_cfg=init_cfg)
+        self.depth_pretrained = depth_pretrained
+
+        # ── RGB stream: ConvNeXt-Atto, timm pretrained, serial stage loop ───
+        _rgb = timm.create_model(
+            'convnext_atto',
+            features_only=True,
+            pretrained=True,
+            in_chans=3,
+            out_indices=(0, 1, 2, 3),
+        )
+        self.stem = nn.Sequential(_rgb.stem_0, _rgb.stem_1)
+        self.rgb_stages = nn.ModuleList([
+            getattr(_rgb, f'stages_{i}') for i in range(4)
+        ])
+        self._is_init = True  # timm이 이미 pretrained 로드
+
+        # ── Depth stream: full ConvNeXt-Atto, 1ch ───────────────────────────
+        # With depth_pretrained, timm loads the ImageNet weights and adapts the
+        # 4x4 stem itself. timm SUMS the three input channels where the other
+        # backbones here average them; the stem is immediately followed by a
+        # LayerNorm, which normalises away a constant scale, so the two
+        # conventions differ only marginally. Using timm's own adaptation
+        # avoids reimplementing its checkpoint loader.
+        self.depth_backbone = timm.create_model(
+            'convnext_atto',
+            features_only=True,
+            pretrained=depth_pretrained,
+            in_chans=1,
+            out_indices=(0, 1, 2, 3),
+        )
+        if depth_pretrained:
+            _n = self.depth_backbone.stem_0.weight.detach().norm().item()
+            if _n == 0:
+                raise RuntimeError(
+                    '[DualConvNeXtAttoPlusSerial] depth_pretrained=True but the '
+                    'depth stem is all zeros; the pretrained load failed.')
+
+        # ── Per-stage CrossModalGating ───────────────────────────────────────
+        self.fusions = nn.ModuleList([
+            CrossModalGating(dim, reduction=fusion_reduction)
+            for dim in self.STAGE_DIMS
+        ])
+
+        print_log(
+            '[DualConvNeXtAttoPlusSerial] RGB ConvNeXt-Atto: timm pretrained (serial stage loop). '
+            f'Depth ConvNeXt-Atto (1ch): '
+            f'{"timm pretrained" if depth_pretrained else "random"} init. '
+            f'Stage dims: {self.STAGE_DIMS}',
+            logger='current')
+
+    def forward(self, x: torch.Tensor):
+        rgb   = x[:, :3]    # (B, 3, H, W)
+        depth = x[:, 3:4]   # (B, 1, H, W)
+
+        # Depth: full ConvNeXt-Atto forward → 4 scale features
+        depth_feats = self.depth_backbone(depth)  # [d0, d1, d2, d3]
+
+        # RGB: stem → stage_i → CMG[i] → stage_i+1 → ...
+        feat = self.stem(rgb)
+        outs = []
+        for i, stage in enumerate(self.rgb_stages):
+            feat = stage(feat)
+            feat = self.fusions[i](feat, depth_feats[i])
+            outs.append(feat)
+
+        return outs

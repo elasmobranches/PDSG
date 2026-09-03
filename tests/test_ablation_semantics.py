@@ -1,0 +1,217 @@
+"""Do the controlled variables in a config actually control anything?
+
+A config key is a claim about what the model will do. These tests check the
+claims that would otherwise be verified by reading a log line — which is
+exactly how this project once shipped a control arm whose depth encoder was
+hardcoded to random initialisation while its log said ``pretrained``. Every
+assertion here observes model weights, never a flag read back off a config
+and never a message.
+
+Network: the HD checks below load the same ImageNet checkpoints training
+would, so they need network access (or a warm ``~/.cache/torch/hub``) the
+first time they run. That is deliberate — the only way to see whether
+pretrained weights landed is to have the pretrained weights. These tests
+fail rather than skip when the download fails, because a skip is how a check
+like this quietly stops checking.
+"""
+import copy
+
+import pytest
+import torch
+from mmseg.registry import MODELS
+
+import chamnet
+from chamnet.config.builder import build_config
+
+chamnet.register_all()
+
+# Every test in this module builds an HD backbone and loads the same
+# ImageNet checkpoints training would, so all of them need network access
+# (or a warm ~/.cache/torch/hub) -- see the `network` marker's note in
+# pyproject.toml for why they are not skipped when that is unavailable.
+pytestmark = pytest.mark.network
+
+BACKBONES = ['resnet18', 'mit_b0', 'segnext_t', 'convnext_atto']
+
+# Where each HD backbone's depth encoder gets its pretrained weights, which
+# decides how "did they actually load?" has to be observed:
+#
+#   'init_weights' — DualResNetV1c18LateFusion / DualMiTB0LateFusion /
+#       DualMSCANLateFusion build a randomly-initialised depth encoder in
+#       __init__ and fill it in later, from the RGB checkpoint, inside
+#       init_weights(). So the load is visible as parameters changing across
+#       that call.
+#   'constructor' — DualConvNeXtAttoPlusSerial hands depth_pretrained straight
+#       to timm.create_model, so the weights are already in place when __init__
+#       returns and init_weights() changes nothing. Nothing to diff across;
+#       the depth encoder is instead compared against an independently
+#       constructed timm model, which is where those weights should have come
+#       from.
+LOADS_AT = {
+    'resnet18': 'init_weights',
+    'mit_b0': 'init_weights',
+    'segnext_t': 'init_weights',
+    'convnext_atto': 'constructor',
+}
+
+
+# The checkpoint key whose 3-channel filter each HD depth encoder adapts down
+# to 1 channel. mit_b0 and segnext_t declare it on the class as
+# FIRST_CONV_KEY and hand it to load_rgb_into_depth_encoder;
+# DualResNetV1c18LateFusion predates that helper and hardcodes 'stem.0.weight'
+# inside its own _load_pretrained_depth, so its key is written out here. The
+# test below cross-checks this table against the class attribute wherever one
+# exists, so the two cannot drift apart unnoticed.
+HD_FIRST_CONV_KEY = {
+    'resnet18': 'stem.0.weight',
+    'mit_b0': 'layers.0.0.projection.weight',
+    'segnext_t': 'patch_embed1.proj.0.weight',
+}
+
+
+def _timm_convnext_depth_encoder(pretrained):
+    """An independent copy of the depth encoder DualConvNeXtAttoPlusSerial builds."""
+    import timm
+    return timm.create_model('convnext_atto', features_only=True,
+                             pretrained=pretrained, in_chans=1,
+                             out_indices=(0, 1, 2, 3))
+
+
+def _hd_backbone(backbone, depth_pretrained=None):
+    """Build just the HD backbone `build_config` emits, optionally overriding
+    depth_pretrained so the same code path can be run as its own control."""
+    cfg = build_config(method='hd', backbone=backbone, recipe='paper_v13', seed=37)
+    stem = copy.deepcopy(cfg.model['backbone'])
+    if depth_pretrained is not None:
+        stem['depth_pretrained'] = depth_pretrained
+    with chamnet.scoped(cfg):
+        return MODELS.build(stem)
+
+
+def _count_changed_by_init_weights(model):
+    before = [p.detach().clone() for p in model.depth_backbone.parameters()]
+    model.init_weights()
+    after = list(model.depth_backbone.parameters())
+    assert len(before) == len(after)
+    return sum(1 for a, b in zip(after, before) if not torch.equal(a, b)), len(after)
+
+
+@pytest.mark.parametrize('backbone', BACKBONES)
+def test_hd_depth_encoder_actually_loads_pretrained(backbone):
+    """`depth_pretrained=True` must move real weights into the depth encoder.
+
+    The paper's HD arm sets this on all four backbones (recipe `hd:
+    depth_pretrained`, and all four hd_*.merged.py fixtures), and it is not a
+    cosmetic setting: HD's depth encoder is a full second copy of the
+    backbone, so pretrained-versus-random there is a bigger difference than
+    the fusion design the paper is actually comparing. This project has
+    already shipped one arm that claimed a pretrained init it never
+    performed, and separately found HD's depth encoder to be pretrained on
+    ResNet only when it was meant to be uniform across backbones — so the
+    check is on the weights themselves, not on the flag or the log line.
+    """
+    assert build_config(method='hd', backbone=backbone, recipe='paper_v13',
+                        seed=37).model['backbone']['depth_pretrained'] is True, (
+        'precondition: the recipe asks for a pretrained HD depth encoder')
+    model = _hd_backbone(backbone)
+
+    if LOADS_AT[backbone] == 'constructor':
+        got = dict(model.depth_backbone.named_parameters())
+        reference = dict(_timm_convnext_depth_encoder(True).named_parameters())
+        assert set(got) == set(reference)
+        differing = [k for k, v in reference.items() if not torch.equal(got[k], v)]
+        assert not differing, (
+            f'depth encoder disagrees with timm pretrained weights at {differing[:5]}')
+        # ...and that agreement means something only because a random init
+        # would not produce it.
+        random_stem = _timm_convnext_depth_encoder(False).stem_0.weight
+        assert not torch.equal(model.depth_backbone.stem_0.weight, random_stem)
+        return
+
+    changed, total = _count_changed_by_init_weights(model)
+    assert changed == total, (
+        f'{changed}/{total} depth-encoder parameters changed during '
+        'init_weights(); a pretrained load should replace all of them')
+
+
+@pytest.mark.parametrize('backbone', BACKBONES)
+def test_hd_depth_encoder_stays_random_when_not_asked(backbone):
+    """The other half: `depth_pretrained=False` must leave it random.
+
+    Without this, a backbone that loaded the RGB checkpoint into its depth
+    encoder unconditionally would pass the test above while making
+    `depth_pretrained` a decoration — and the ablation it exists to support
+    (random vs. ImageNet depth encoder, which on greenhouse data moves Pillar
+    IoU by about 3 points) would silently be comparing a thing to itself.
+    """
+    model = _hd_backbone(backbone, depth_pretrained=False)
+
+    if LOADS_AT[backbone] == 'constructor':
+        reference = _timm_convnext_depth_encoder(True)
+        assert not torch.equal(model.depth_backbone.stem_0.weight,
+                               reference.stem_0.weight)
+        return
+
+    changed, total = _count_changed_by_init_weights(model)
+    assert changed == 0, (
+        f'{changed}/{total} depth-encoder parameters changed during '
+        'init_weights() even though depth_pretrained=False')
+
+
+@pytest.mark.parametrize('backbone', sorted(HD_FIRST_CONV_KEY))
+def test_hd_depth_first_conv_is_the_channel_averaged_rgb_filter(backbone):
+    """Check the transfer rule itself, not just that something was copied.
+
+    The rule is: copy every layer verbatim, and adapt only the first
+    convolution, *averaging* its three input channels into one so a
+    single-channel input keeps the activation scale of the pretrained RGB
+    filters. Averaging rather than summing is the entire content of that
+    rule, and nothing else in this suite can see it. A sum still replaces
+    every parameter, so `test_hd_depth_encoder_actually_loads_pretrained`
+    still passes; it still moves the stem's norm, so
+    `_load_pretrained_depth`'s own `norm_before == norm_after` guard still
+    passes; it changes no config, so `test_hd_matches_paper` and the smoke
+    test are untouched. The depth stem would simply start at 3x the intended
+    activation scale with a fully green suite — which is the one thing that
+    matters most on resnet18, the backbone whose pretrained-vs-random depth
+    result this project actually quotes (-3.14 Pillar, see
+    chamnet/models/depth_pretrain.py).
+
+    So recompute the expected filter straight from the checkpoint and
+    compare. All three checkpoint-loading backbones are covered: mit_b0 and
+    segnext_t through the shared `load_rgb_into_depth_encoder`, resnet18
+    through its own older `_load_pretrained_depth`, which implements the same
+    rule separately and therefore needs its own check rather than inheriting
+    one.
+
+    convnext_atto is excluded on purpose: timm does its own adaptation there
+    and *sums* rather than averages. Its stem is followed immediately by a
+    LayerNorm, which normalises the constant scale difference away, so the
+    two conventions agree in effect — see the note in
+    DualConvNeXtAttoPlusSerial.
+    """
+    from mmengine.runner.checkpoint import _load_checkpoint
+
+    key = HD_FIRST_CONV_KEY[backbone]
+    model = _hd_backbone(backbone)
+    declared = getattr(model, 'FIRST_CONV_KEY', None)
+    if declared is not None:
+        assert declared == key, (
+            f'{backbone} declares FIRST_CONV_KEY={declared!r} but this test '
+            f'expects {key!r}')
+    model.init_weights()
+
+    checkpoint = _load_checkpoint(model.init_cfg['checkpoint'], map_location='cpu')
+    state_dict = checkpoint.get('state_dict', checkpoint)
+    rgb_filter = state_dict[key]
+    assert rgb_filter.shape[1] == 3, 'the RGB checkpoint should have a 3ch first conv'
+
+    depth_conv = model.depth_backbone
+    for part in key[:-len('.weight')].split('.'):
+        depth_conv = depth_conv[int(part)] if part.isdigit() else getattr(depth_conv, part)
+    assert depth_conv.in_channels == 1
+    expected = rgb_filter.mean(dim=1, keepdim=True)
+    assert torch.equal(depth_conv.weight, expected), (
+        f'{backbone} depth first conv is not the channel-averaged RGB filter; '
+        f'ratio to expected ~'
+        f'{(depth_conv.weight.norm() / expected.norm()).item():.3f}')

@@ -27,3 +27,17 @@ include = ["chamnet*"]
 
 [tool.setuptools.package-data]
 chamnet = ["recipes/*.yaml"]
+
+[tool.pytest.ini_options]
+markers = [
+    # Tests that download the ImageNet checkpoints the paper's runs used.
+    # They stay in the default run on purpose: the only way to observe that
+    # pretrained weights actually landed in a depth encoder is to have the
+    # pretrained weights, and a check that skips itself when the download
+    # fails is a check that can silently stop checking -- this project has
+    # already shipped an arm whose depth encoder was random while its log
+    # said otherwise. If you genuinely need an offline run, deselect them
+    # explicitly with `pytest -m "not network"`, which leaves a visible
+    # record of what was not verified. Do not convert them to skips.
+    "network: downloads pretrained checkpoints (deselect with -m 'not network')",
+]

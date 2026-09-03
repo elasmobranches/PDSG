@@ -9,7 +9,8 @@ def test_cmg_is_identity_when_depth_is_zero_and_gate_off():
     with torch.no_grad():
         out = m(rgb, torch.zeros(2, 16, 8, 8))
     # depth_proj(0) 은 BN 의 bias 만 남으므로 rgb 와 정확히 같지는 않다.
-    # 형상과 유한성만 확인하고, 수치 동일성은 Task 8 의 체크포인트 재생이 검증한다.
+    # 형상과 유한성만 확인하고, 수치 동일성은 tools/replay.py 의 체크포인트
+    # 재생(verification/ 참고)이 검증한다.
     assert out.shape == rgb.shape and torch.isfinite(out).all()
 
 

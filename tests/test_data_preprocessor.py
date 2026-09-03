@@ -6,8 +6,8 @@
 bgr_to_rgb 가 조용히 무시된다 — SD 체크포인트 재생에서 chamoe 클래스 IoU 가
 ~65%에서 0으로 무너지는 것으로 실측 확인됨. chamnet 은 vanilla 클래스를 덮어쓰지
 않고 별도 이름(ChamNetSegDataPreProcessor)으로 등록한다 — 이름을 바꿔치기하면
-`chamnet.register_all()` 이 "호출자에게 부작용이 없어야 한다"는 규칙(Task 6,
-test_smoke.py 참고)을 깨고, 내보낸 config 의 `type='SegDataPreProcessor'` 가
+`chamnet.register_all()` 이 "호출자에게 부작용이 없어야 한다"는 규칙
+(test_smoke.py 참고)을 깨고, 내보낸 config 의 `type='SegDataPreProcessor'` 가
 실제로는 다른 클래스를 뜻하게 되어 재현성 릴리스가 감당할 수 없는 모호함이
 생긴다.
 """
