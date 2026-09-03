@@ -7,9 +7,13 @@ families, on top of an unmodified `mmsegmentation` 1.2.2.
 
 ## Dataset availability
 
-The greenhouse dataset is not published, and neither are the trained
-checkpoints. Access is possible for research use — please contact
-shinds@sju.ac.kr with a short note on the intended use.
+The greenhouse dataset is not published. Access is possible for research use —
+please contact shinds@sju.ac.kr with a short note on the intended use.
+
+Two trained checkpoints *are* published, in the
+[`v1.0.0` release](https://github.com/elasmobranches/PDSG/releases/tag/v1.0.0):
+the ResNet-18 baseline and its RGB-D counterpart. `docs/MODEL_ZOO.md` has their
+checksums and what they score.
 
 Without the data, `chamnet smoke` builds a synthetic dataset in the documented
 layout and runs it through the real pipeline, and

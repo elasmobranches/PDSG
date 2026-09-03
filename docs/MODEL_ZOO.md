@@ -1,11 +1,9 @@
 # Model zoo
 
-**Not attached to a release yet.** The two files exist and their checksums
-below have been verified against the bytes on the machine that trained them,
-but no release carries them, so the table has no download links. Until one
-does, this page is the record of *which* two files they are and what they must
-hash to — so that whoever attaches them can confirm they attached the right
-ones. "Publishing them" at the bottom is the procedure.
+Two checkpoints are attached to the [`v1.0.0`
+release](https://github.com/elasmobranches/PDSG/releases/tag/v1.0.0). Verify the
+SHA-256 below against what you download — the checksums are of the bytes as they
+sit on the machine that trained them, and a download was checked against them.
 
 Two checkpoints, both ResNet-18 at seed 37: the RGB baseline and the
 heavy-depth model, the pair the published comparison turns on.
@@ -33,15 +31,13 @@ one you downloaded.
 
 ## The files
 
-No download links yet — see the top of this page. The names are the ones the
-upload procedure at the bottom assigns; the checksums are of the bytes as they
-sit on the machine that trained them, and have been verified against the copies
-staged for upload.
+Loading a checkpoint executes pickled code — load only ones you trust, and
+check the hash of anything you downloaded before you load it.
 
 | file | method | backbone | seed | selected iter | bytes | SHA-256 |
 |---|---|---|---:|---:|---:|---|
-| `chamnet_bl_resnet18_seed37.pth` | `bl` (RGB only) | resnet18 | 37 | 1300 | 56,144,019 | `7557577f62e142565054be7ec78c9f179ea66212bec71887a41e5c3e233d817f` |
-| `chamnet_hd_resnet18_seed37.pth` | `hd` (RGB + depth, heavy depth encoder) | resnet18 | 37 | 1720 | 103,633,995 | `127648c8702123360226219f7012a51f9229e5416f3f4d314a12096e501b3fda` |
+| [`chamnet_bl_resnet18_seed37.pth`](https://github.com/elasmobranches/PDSG/releases/download/v1.0.0/chamnet_bl_resnet18_seed37.pth) | `bl` (RGB only) | resnet18 | 37 | 1300 | 56,144,019 | `7557577f62e142565054be7ec78c9f179ea66212bec71887a41e5c3e233d817f` |
+| [`chamnet_hd_resnet18_seed37.pth`](https://github.com/elasmobranches/PDSG/releases/download/v1.0.0/chamnet_hd_resnet18_seed37.pth) | `hd` (RGB + depth, heavy depth encoder) | resnet18 | 37 | 1720 | 103,633,995 | `127648c8702123360226219f7012a51f9229e5416f3f4d314a12096e501b3fda` |
 
 Each is the campaign's own `best_mIoU_iter_<n>.pth` under a name that says what
 it is; the checksums are of those bytes, unmodified, so they verify against
@@ -151,20 +147,17 @@ regenerated outside the training server. What a download does support:
 * **Fine-tune from them**, by passing the file as `load_from` on an exported
   config.
 
-## Publishing them
+## Where they came from
 
-The checkpoints live with the dataset on the machine that trained them. Once
-this repository is published somewhere with a release mechanism, the step is:
+Each is the campaign's own `best_mIoU_iter_<n>.pth`, copied under a name that
+says which arm it is:
 
-```bash
-# from the machine holding the trained runs
-cp <run dir>/chamnet_baseline_resnet18/best_mIoU_iter_1300.pth chamnet_bl_resnet18_seed37.pth
-cp <run dir>/chamnet_dual_plus_resnet18/best_mIoU_iter_1720.pth chamnet_hd_resnet18_seed37.pth
-sha256sum chamnet_bl_resnet18_seed37.pth chamnet_hd_resnet18_seed37.pth   # must match the table above
-gh release create v1.0.0 chamnet_bl_resnet18_seed37.pth chamnet_hd_resnet18_seed37.pth
+```
+<run dir>/chamnet_baseline_resnet18/best_mIoU_iter_1300.pth  ->  chamnet_bl_resnet18_seed37.pth
+<run dir>/chamnet_dual_plus_resnet18/best_mIoU_iter_1720.pth ->  chamnet_hd_resnet18_seed37.pth
 ```
 
-The checksum step is the point of it: the table above was computed from the
-files on that server, so a mismatch means the wrong run directory or a copy
-that did not complete, and it is cheaper to find out before the upload than
-after. Add the download links to the table when they exist.
+The SHA-256 values in the table were computed on that machine, before the
+upload, and re-checked against an anonymous download of the release afterwards.
+A mismatch on either side would mean the wrong run directory or a copy that did
+not complete.
