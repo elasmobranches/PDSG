@@ -1,5 +1,15 @@
 # hooks/iter_logger_hook.py
 # Segmentation Train/Val Loss와 mIoU를 CSV 파일로 기록하는 Hook
+#
+# Ported verbatim from the research repository's file of the same name — the
+# first two lines above are its own header. No body was modified on the way
+# in. It writes the per-iteration learning_curve.csv every recorded run has
+# beside its checkpoints, which is what makes a retrain's loss curve
+# comparable to a recorded one step by step (docs/VERIFICATION.md).
+#
+# The Korean in this file is entirely comments and docstrings, carried over
+# with the body. Every string it actually logs during a run is English; there
+# is nothing here to translate that a user would ever see.
 
 import os
 import csv

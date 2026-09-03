@@ -35,9 +35,16 @@ access, so this tool can only be run there, not from a plain checkout. Once
 on that server, with the dataset and checkpoints in place, it runs as:
 
 ```bash
-python3 tools/replay.py --all --out verification/replay.csv \
-    --commit "$(git rev-parse --short HEAD)"
+python3 tools/replay.py --all --data <dataset root> --src <recorded runs root> \
+    --out verification/replay.csv --commit "$(git rev-parse --short HEAD)"
 ```
+
+`--data` is the copy of the greenhouse dataset the recorded metrics were
+computed against, and it is deliberately required rather than defaulted: it is
+**not** the layout `docs/DATA_FORMAT.md` describes, and pointing it at a
+migrated copy would silently score against different label files. `--src` is
+the directory holding the recorded runs' `work_dirs` and their
+`results_v8.csv`.
 
 `--all` replays every entry in the script's `WORK` table: the nine arms this
 package implements (`bl`, `ef`, `sd`, `hd`, plus HD's four controls and early
@@ -299,8 +306,13 @@ is the exception**: at this seed the arm shows no effect at all.
 
 The cause is known, and it is not the shuffled arm. Across the ten recorded
 seeds, `hd/convnext_atto` minus `hd/shuffled/convnext_atto` on test Pillar is
-−4.50 ± 2.76 (p = 0.0006), and **seed 37 is the only one of the ten where the
-sign flips**; the other nine run −2.68 to −9.36. It is the HD *baseline* at
+**+4.50 ± 2.76** (p = 0.0006) — positive, because shuffling costs Pillar, as
+the table above shows it doing on the first seven rows. **Seed 37 is the only
+one of the ten where the sign flips**, at −0.49; the other nine run **+2.68 to
++9.36**. (An earlier version of this paragraph wrote all of those negative,
+which made seed 37 agree in sign with the other nine and left "the sign flips"
+describing nothing. The magnitudes were right and the conclusion is
+unaffected.) It is the HD *baseline* at
 seed 37 that is anomalous: against its own nine-seed distribution that run
 sits at z = −4.45 on Pillar, where fifteen of the sixteen flow×backbone
 combinations sit between z −0.87 and +1.35, and the anomaly is confined to
@@ -564,7 +576,7 @@ row developing a residual, or a SegNeXt-T residual appearing on a quantity
 that cannot depend on the head's draws. Either would mean a fork patch does
 change the computation after all, and would reopen this.
 
-### Why the replay is not re-driven through `tools/test.py`
+### Why the replay is not re-driven through mmsegmentation's `tools/test.py`
 
 It might well close these eight rows: that path is the one that returns 80.80.
 The reason not to is not that it wouldn't work.

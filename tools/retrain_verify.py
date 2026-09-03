@@ -349,7 +349,7 @@ def main() -> int:
                     help="a `chamnet sweep --out` directory holding the "
                          'retrained runs, in the campaign layout '
                          '<runs>/<seed>/chamnet_<flow>_<backbone>/')
-    ap.add_argument('--src', default='/data',
+    ap.add_argument('--src', required=True, metavar='ROOT',
                     help="root holding the recorded runs' work_dirs and their "
                          'results_v8.csv')
     ap.add_argument('--out', default='verification/retrain.csv')

@@ -1,8 +1,9 @@
-"""백본별 아키텍처 사실. 레시피가 아니라 '이 백본이 요구하는 것'.
+"""Per-backbone architecture facts -- not a recipe, but what this backbone requires.
 
-값은 논문(160-run 실험 grid)이 실제로 만든 병합 config
-(tests/fixtures/paper/bl_*.merged.py) 에서 확인된 그대로다.
-fixture 와 이 표가 어긋나면 fixture 가 옳다 — 표를 고친다.
+The values are exactly what was read out of the merged configs the published
+160-run grid actually produced (tests/fixtures/paper/bl_*.merged.py). If a
+fixture and this table disagree, the fixture is right and the table gets
+fixed.
 """
 
 NORM = dict(type='SyncBN', requires_grad=True)
@@ -59,7 +60,7 @@ BACKBONES = {
     'convnext_atto': dict(
         stem=dict(type='TIMMBackbone', model_name='convnext_atto', in_channels=3,
                   features_only=True, pretrained=True, out_indices=(0, 1, 2, 3)),
-        pretrained=None,                       # timm 이 직접 적재
+        pretrained=None,                       # timm loads the weights itself
         in_channels=[40, 80, 160, 320],
         decode_head=dict(type='UPerHead', channels=256, pool_scales=(1, 2, 3, 6)),
         aux=dict(type='FCNHead', in_channels=160, in_index=2, channels=128, num_convs=1),

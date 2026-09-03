@@ -1,4 +1,11 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+"""The eight-class greenhouse dataset.
+
+Ported verbatim from the research repository's mmseg/datasets/chamoe.py, whose
+class name and METAINFO the published configs and every recorded metrics column
+refer to. The directory layout it requires is docs/DATA_FORMAT.md; the class
+indices below are the values a mask PNG must contain.
+"""
 from mmseg.datasets import BaseSegDataset
 from mmseg.registry import DATASETS
 

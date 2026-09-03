@@ -877,13 +877,22 @@ def _load_replay_module():
     Safe to import now: it registers nothing at module scope (the per-class
     metric it used to define with a decorator lives in chamnet.metrics), so
     importing it has no effect on any registry.
+
+    Compiled from the source text rather than through `spec.loader`, which
+    consults `__pycache__` and validates a cached `.pyc` against the source's
+    size and its mtime *in whole seconds*. A same-length edit made inside one
+    second -- which is what a mutation test does, and `>= 3` to `== 3` is
+    same-length -- would silently run the previous bytecode, so a mutation
+    review of `tools/replay.py` could pass while reading code that is no
+    longer on disk. Observed live while this project was checking another
+    tool: the mutation kept passing and the restored tree kept failing.
     """
-    import importlib.util
+    import types
 
     path = Path(__file__).resolve().parents[1] / 'tools' / 'replay.py'
-    spec = importlib.util.spec_from_file_location('chamnet_replay_tool', path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = types.ModuleType('chamnet_replay_tool')
+    module.__file__ = str(path)
+    exec(compile(path.read_text(), str(path), 'exec'), module.__dict__)
     return module
 
 
@@ -984,3 +993,60 @@ def test_the_replay_row_is_plain_floats(tmp_path, monkeypatch):
                if k not in ('method', 'backbone', 'ablation')), (
         {k: type(v).__name__ for k, v in row.items()})
     json.dumps(row)
+
+
+def test_the_verification_tools_take_their_roots_from_the_caller():
+    """Neither tool may carry a path off the machine that trained the runs.
+
+    They can only run where the private dataset and checkpoints are, so a
+    default pointing straight at them is the convenient thing to write -- and
+    both shipped that way, `--data` at an absolute path naming a directory on
+    that machine and `--src` at its parent. Two reasons that is wrong, and the
+    second is the one that bites.
+
+    A published repository should not describe someone's filesystem. And a
+    default here is not merely cosmetic: the dataset copy `replay.py` needs is
+    *not* the layout `docs/DATA_FORMAT.md` documents, so a `--data` default
+    invites running it against a migrated copy and scoring on different label
+    files (`_use_original_val_test_layout` explains which); and `--src`
+    locates both the checkpoints to load and the recorded metrics to compare
+    them against, so a wrong value scores the wrong weights against the wrong
+    reference. Either way the run produces numbers rather than an error.
+
+    Checked on the source text because both parsers live under
+    `if __name__ == '__main__'` and are never built by an import.
+    """
+    import ast
+
+    for name in ('replay.py', 'retrain_verify.py'):
+        path = Path(__file__).resolve().parents[1] / 'tools' / name
+        tree = ast.parse(path.read_text())
+
+        declared = {}
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and getattr(node.func, 'attr', None) == 'add_argument'
+                    and node.args
+                    and isinstance(node.args[0], ast.Constant)):
+                declared.setdefault(node.args[0].value, []).append(
+                    {kw.arg: kw.value for kw in node.keywords})
+
+        for flag in ('--data', '--src'):
+            if flag not in declared:
+                continue            # retrain_verify.py takes no --data
+            assert len(declared[flag]) == 1, (
+                f'{name}: expected one {flag}, found {len(declared[flag])}')
+            keywords = declared[flag][0]
+            assert 'default' not in keywords, (
+                f"{name}'s {flag} must not have a default: the only path it "
+                'could sensibly default to is one on the training machine')
+            assert isinstance(keywords.get('required'), ast.Constant) and \
+                keywords['required'].value is True, \
+                f'{name}: {flag} must be required'
+        assert '--src' in declared, f'{name}: no --src to check'
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                assert not node.value.startswith('/data/'), (
+                    f'{name} names a path on the training machine: '
+                    f'{node.value!r}')

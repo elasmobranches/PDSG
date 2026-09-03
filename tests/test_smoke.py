@@ -260,13 +260,13 @@ def test_cli_list_only_advertises_combinations_the_builder_can_serve(capsys):
     methods = sorted({m for m, _ in VALID})
     assert methods == ['bl', 'ef', 'hd', 'sd']
 
-    # Parse the printed table back: 'bl  × <backbones>  ablation: (없음), rgb'
+    # Parse the printed table back: 'bl  × <backbones>  ablation: (none), rgb'
     printed = {}
     for line in listed.splitlines():
         if '  ablation: ' not in line:
             continue
         head, tail = line.split('  ablation: ', 1)
-        printed[head.split()[0]] = {None if x == '(없음)' else x
+        printed[head.split()[0]] = {None if x == '(none)' else x
                                     for x in tail.split(', ')}
     assert printed == {m: {a for mm, a in VALID if mm == m} for m in methods}, (
         f'`chamnet list` printed {printed!r}, which is not combos.VALID')

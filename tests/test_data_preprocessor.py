@@ -1,15 +1,17 @@
-"""chamnet.register_all() 이 ChamNetSegDataPreProcessor 를 실제로 등록하는지,
-그리고 4채널 이상 입력에서 BGR<->RGB 스왑이 실제로 일어나는지 확인한다.
+"""Two things: that chamnet.register_all() really does register
+ChamNetSegDataPreProcessor, and that the BGR<->RGB swap really does happen on
+inputs with more than three channels.
 
-배경: 논문 재생(tools/replay.py) 에서 vanilla mmseg 의 SegDataPreProcessor 는
-`inputs[0].size(0) == 3` 일 때만 채널을 뒤집어, RGB+D(4채널) 입력에서는
-bgr_to_rgb 가 조용히 무시된다 — SD 체크포인트 재생에서 chamoe 클래스 IoU 가
-~65%에서 0으로 무너지는 것으로 실측 확인됨. chamnet 은 vanilla 클래스를 덮어쓰지
-않고 별도 이름(ChamNetSegDataPreProcessor)으로 등록한다 — 이름을 바꿔치기하면
-`chamnet.register_all()` 이 "호출자에게 부작용이 없어야 한다"는 규칙
-(test_smoke.py 참고)을 깨고, 내보낸 config 의 `type='SegDataPreProcessor'` 가
-실제로는 다른 클래스를 뜻하게 되어 재현성 릴리스가 감당할 수 없는 모호함이
-생긴다.
+Background: while replaying the published checkpoints (tools/replay.py),
+vanilla mmseg's SegDataPreProcessor was found to swap channels only when
+`inputs[0].size(0) == 3`, so on RGB+D (4-channel) input bgr_to_rgb silently
+does nothing -- measured, in the SD checkpoint replay, as the `chamoe` class
+IoU collapsing from ~65% to 0. chamnet registers its corrected copy under its
+own name (ChamNetSegDataPreProcessor) rather than overriding vanilla's. Taking
+the name over would break the rule that `chamnet.register_all()` has no side
+effects for a caller (see test_smoke.py), and would leave an exported config
+whose `type='SegDataPreProcessor'` actually meant a different class -- an
+ambiguity a reproducibility release cannot carry.
 """
 import subprocess
 import sys
@@ -23,29 +25,29 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_register_all_registers_chamnet_seg_data_preprocessor():
-    """등록이 register_all() 자체에서 나오는지 검증한다 — 다른 top-level import
-    가 먼저 실행돼 우연히 등록된 것이 아니라.
+    """The registration must come from register_all() itself, not from some
+    other top-level import having happened to run first.
 
-    이 테스트 파일 안에서 `from chamnet.models.data_preprocessor import
-    ChamNetSegDataPreProcessor` 를 이미 썼으므로, 같은 프로세스에서
-    MODELS.get(...) 를 확인하면 그 top-level import 가 이미
-    @MODELS.register_module() 를 실행해놓은 뒤라 register_all() 이 한 일인지
-    알 수 없다 (register_all() 을 호출하지 않아도 통과함 — 장식적 검증). 이
-    테스트가 실제로 무언가를 검증하게 하려면, 이 모듈을 아직 아무도 import
-    하지 않은 새 인터프리터에서 register_all() 만 호출해 확인해야 한다.
+    This file already does `from chamnet.models.data_preprocessor import
+    ChamNetSegDataPreProcessor` at the top, so checking MODELS.get(...) in the
+    same process says nothing: that import has already executed
+    @MODELS.register_module(), and the check would pass even without calling
+    register_all() at all -- a decorative assertion. For it to verify
+    anything, register_all() has to be the only thing called, in a fresh
+    interpreter where nothing has imported the module yet.
 
-    깨뜨려서 검증함: chamnet/__init__.py 의 register_all() 에서
-    `from chamnet.models import data_preprocessor` 줄을 지우고 재실행하면
-    이 테스트가 실패한다 (등록되지 않음) — 지우기 전에는 통과.
+    Verified by breaking it: delete the `from chamnet.models import
+    data_preprocessor` line from register_all() in chamnet/__init__.py and
+    this test fails (nothing registered); it passes before the deletion.
     """
     script = (
         'import chamnet\n'
         'from mmseg.registry import MODELS\n'
         "assert 'ChamNetSegDataPreProcessor' not in MODELS.module_dict, "
-        "'이미 등록됨 -- 격리 실패'\n"
+        "'already registered -- the isolation failed'\n"
         'chamnet.register_all()\n'
         "assert 'ChamNetSegDataPreProcessor' in MODELS.module_dict, "
-        "'register_all() 이 등록하지 않음'\n"
+        "'register_all() did not register it'\n"
         "print('OK')\n"
     )
     # cwd=REPO_ROOT: without it, `import chamnet` in the child only
@@ -59,7 +61,7 @@ def test_register_all_registers_chamnet_seg_data_preprocessor():
 
 
 def test_bgr_to_rgb_swaps_first_three_channels_and_passes_the_rest():
-    """4채널(RGB+D) 입력에서도 첫 3채널만 뒤집히고 depth 는 그대로여야 한다."""
+    """On 4-channel (RGB+D) input only the first three channels swap; depth passes through."""
     pre = ChamNetSegDataPreProcessor(mean=[0.0] * 4, std=[1.0] * 4, bgr_to_rgb=True)
     h, w = 4, 4
     img = torch.zeros(4, h, w)
@@ -75,7 +77,7 @@ def test_bgr_to_rgb_swaps_first_three_channels_and_passes_the_rest():
 
 
 def test_three_channel_behaviour_is_unchanged():
-    """3채널(BL) 입력에서는 vanilla 와 동일하게 동작해야 한다 — 회귀 아님."""
+    """On 3-channel (BL) input the behaviour must match vanilla's exactly -- no regression."""
     pre = ChamNetSegDataPreProcessor(mean=[0.0] * 3, std=[1.0] * 3, bgr_to_rgb=True)
     h, w = 4, 4
     img = torch.zeros(3, h, w)

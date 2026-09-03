@@ -35,9 +35,10 @@ schedule:
 
 runtime:
   batch_size: 16
-  # 데이터로더 워커 수. train 과 val/test 가 다르다 — 논문 실행이 그랬고,
-  # 이 값은 성능 노브가 아니다: shuffled 통제군은 표본마다 난수를 뽑으므로
-  # 워커 수가 바뀌면 평가 입력 자체가 바뀐다 (verification/README.md 참고).
+  # Dataloader workers. train and val/test differ, because the published runs
+  # differed, and this is not a throughput knob: the shuffled control arms draw
+  # a random permutation per sample inside the workers, so changing the worker
+  # count changes the evaluation input itself (see verification/README.md).
   num_workers: 8
   num_workers_eval: 4
   val_interval: 20

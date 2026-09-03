@@ -1,10 +1,12 @@
-"""빌더 산출물이 논문을 만든 병합 config 와 같은지 확인한다.
+"""Check that what the builder emits matches the merged config the published
+runs were produced from.
 
-fixture 는 work_dirs_v12+_512bc_pretrained 등에서 가져온 실제 실행 config 다.
-데이터 경로 관행(depth_suffix 등)은 논문 실행에서도 split 마다 달랐다 (train은
-'.npy', valid/test는 '_depth.npy') — 릴리스가 모든 split 을 '.npy' 하나로
-통일했다. 이 차이는 무시하지 않고, 양쪽이 실제로 기대한 값을 말하는지 확인한
-뒤에만 비교에서 지운다 — `_normalize_pipeline` 참고.
+The fixtures are the real configs those runs executed, dumped from their
+work_dirs. One data-path convention differed per split in the published runs
+themselves (train used '.npy', valid and test used '_depth.npy'); the release
+unifies every split on '.npy'. That difference is not ignored: both sides are
+asserted to say the value they are each expected to say, and only then is it
+taken out of the comparison -- see `_normalize_pipeline`.
 """
 import pytest
 from mmengine.config import Config

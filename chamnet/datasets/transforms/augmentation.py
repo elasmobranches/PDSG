@@ -1,4 +1,12 @@
-"""Online RGB/depth/mask augmentation for ChamNet training."""
+"""Online RGB/depth/mask augmentation for ChamNet training.
+
+Ported verbatim from the research repository's own `augmentation.py`, the file
+the published runs augmented with; the class body was not modified on the way
+in. The values it applies are documented, descriptively only, in the
+`augmentation` block of chamnet/recipes/paper.yaml — the builder never reads
+that block, and tests/test_augmentation_recipe_sync.py is what keeps the two
+from drifting apart.
+"""
 
 from __future__ import annotations
 

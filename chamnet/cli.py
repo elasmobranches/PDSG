@@ -1,4 +1,4 @@
-"""빌더 위의 얇은 껍데기. 로직은 전부 chamnet.config.builder 에 있다."""
+"""A thin shell over the builder. All the logic lives in chamnet.config.builder."""
 from __future__ import annotations
 
 import argparse
@@ -27,7 +27,9 @@ def _common(sp):
     sp.add_argument('--backbone', required=True, choices=sorted(BACKBONES))
     sp.add_argument('--ablation', default=None, choices=ABLATIONS)
     sp.add_argument('--recipe', default='paper')
-    sp.add_argument('--data', default=None, help='데이터 루트. 레시피 값을 덮어쓴다')
+    sp.add_argument('--data', default=None, metavar='ROOT',
+                    help="dataset root, laid out as docs/DATA_FORMAT.md "
+                         "requires. Overrides the recipe's own value.")
     sp.add_argument('--seed', type=int, default=31)
 
 
@@ -67,8 +69,12 @@ def main(argv: list[str] | None = None) -> int:
     # method that has no such arm is refused up front rather than after the
     # earlier combinations have spent hours on the GPU.
     p.add_argument('--ablation', default=None, choices=ABLATIONS)
-    p.add_argument('--seeds', default=None, help='예: 31-40 또는 31,32')
-    p.add_argument('--data', default=None)
+    p.add_argument('--seeds', default=None, metavar='SEEDS',
+                   help='which training seeds to run, as a range or a list: '
+                        '31-40, or 31,32. Defaults to the recipe\'s own list.')
+    p.add_argument('--data', default=None, metavar='ROOT',
+                   help="dataset root, laid out as docs/DATA_FORMAT.md "
+                        "requires. Overrides the recipe's own value.")
     p.add_argument('--out', default='runs/sweep')
     p.add_argument('--eval-seed', type=int, default=None,
                    help='score every run at this randomness.seed instead of '
@@ -94,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
         vocab = ABLATIONS + sorted({x for _, x in VALID
                                     if x is not None and x not in ABLATIONS})
         for m in METHODS:
-            ok = [x or '(없음)' for x in vocab + [None] if (m, x) in VALID]
+            ok = [x or '(none)' for x in vocab + [None] if (m, x) in VALID]
             print(f'{m:3s} × {", ".join(sorted(BACKBONES))}  ablation: {", ".join(ok)}')
         return 0
 

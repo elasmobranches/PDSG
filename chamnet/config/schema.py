@@ -1,4 +1,4 @@
-"""YAML 레시피를 읽고 검증한다. 학습 설정의 유일한 출처."""
+"""Read and validate a YAML recipe. The single source of the training settings."""
 from __future__ import annotations
 
 import copy
@@ -88,7 +88,7 @@ class Recipe:
     hd: Hd
 
     def optim_for(self, backbone: str) -> dict:
-        """per_backbone 을 병합한 optimizer + paramwise 설정을 돌려준다."""
+        """Return the optimizer + paramwise settings with per_backbone merged in."""
         over = self.optim.per_backbone.get(backbone, {})
         opt = dict(type=self.optim.type, lr=self.optim.lr,
                    weight_decay=self.optim.weight_decay)

@@ -28,9 +28,9 @@ def test_shuffle_preserves_depth_values_and_leaves_rgb_alone():
     img = _rgbd()
     out = t.transform(dict(img=img.copy()))['img']
     assert np.array_equal(np.sort(out[:, :, 3].ravel()),
-                          np.sort(img[:, :, 3].ravel()))   # 값 다중집합 보존
-    assert not np.array_equal(out[:, :, 3], img[:, :, 3])  # 배치는 파괴
-    assert np.array_equal(out[:, :, :3], img[:, :, :3])    # RGB 불변
+                          np.sort(img[:, :, 3].ravel()))   # value multiset preserved
+    assert not np.array_equal(out[:, :, 3], img[:, :, 3])  # arrangement destroyed
+    assert np.array_equal(out[:, :, :3], img[:, :, :3])    # RGB untouched
 
 
 def test_photometric_never_touches_depth():

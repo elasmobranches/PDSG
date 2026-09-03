@@ -1,4 +1,4 @@
-"""레시피(어떻게 학습하는가) + 백본표(이 백본이 요구하는 것) → mmengine Config."""
+"""Recipe (how to train) + backbone table (what this backbone requires) -> mmengine Config."""
 from __future__ import annotations
 
 import copy
@@ -281,7 +281,7 @@ def build_config(method: str, backbone: str, ablation: str | None = None,
                  recipe: str | Path | Recipe = 'paper',
                  data_root: str | None = None, seed: int = 31,
                  work_dir: str | None = None) -> Config:
-    """(method, backbone, ablation) 을 실행 가능한 mmengine Config 로 만든다."""
+    """Turn (method, backbone, ablation) into a runnable mmengine Config."""
     validate(method, ablation)
 
     r = recipe if isinstance(recipe, Recipe) else load_recipe(recipe)

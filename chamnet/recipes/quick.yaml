@@ -1,4 +1,5 @@
-# 파이프라인 확인용 축소판. 논문 수치 재현에 쓰지 말 것.
+# A cut-down recipe for checking the pipeline runs. Do not use it to
+# reproduce the published numbers.
 
 data:
   root: ./data/greenhouse

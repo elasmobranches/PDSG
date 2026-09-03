@@ -1,4 +1,14 @@
-"""Transform for loading pseudo-depth as a 4th image channel (RGB+D)."""
+"""Transform for loading pseudo-depth as a 4th image channel (RGB+D).
+
+Both classes here are ported verbatim from the research repository the
+published checkpoints were trained in, their docstrings included. One
+consequence: the test file LoadDepthAsChannel's docstring cites for the
+depth-rescale equivalence lives in that repository and is not distributed
+here. Left as written rather than tidied — these bodies being byte-for-byte
+the ones that trained the checkpoints is worth more than a cross-reference
+that resolves. The directory layout the transforms require is
+docs/DATA_FORMAT.md.
+"""
 import os.path as osp
 from typing import Optional
 

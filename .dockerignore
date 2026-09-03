@@ -1,0 +1,15 @@
+# Keep the build context to the source. Everything listed here is either
+# untracked working state or is not used by `pip install /opt/chamnet`, and a
+# checkout that has trained anything carries gigabytes of it.
+.git
+.gitignore
+__pycache__
+*.pyc
+*.egg-info
+build
+dist
+.pytest_cache
+.hypothesis
+data
+runs
+*.pth

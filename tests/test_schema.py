@@ -31,12 +31,12 @@ def test_per_backbone_overrides_merge():
     seg = r.optim_for('segnext_t')
     assert seg['betas'] == (0.9, 0.999)
     assert seg['paramwise_cfg']['custom_keys']['head']['lr_mult'] == 10.0
-    assert seg['weight_decay'] == 0.01          # 상속
+    assert seg['weight_decay'] == 0.01          # inherited
 
     cvx = r.optim_for('convnext_atto')
     assert cvx['weight_decay'] == 0.05
     assert cvx['paramwise_cfg']['custom_keys']['bias']['decay_mult'] == 0.0
-    assert cvx['paramwise_cfg']['custom_keys']['head']['lr_mult'] == 5.0   # 상속
+    assert cvx['paramwise_cfg']['custom_keys']['head']['lr_mult'] == 5.0   # inherited
 
 
 def test_quick_recipe_is_shorter_but_same_shape():

@@ -1,4 +1,4 @@
-"""공용 융합 모듈. 원본에서 옮겨도 수치가 같아야 한다."""
+"""The shared fusion modules. Moving them out of the original must not change a number."""
 import torch
 from chamnet.models.fusion import BiGateGating, CrossModalGating, DepthBranch
 
@@ -8,9 +8,10 @@ def test_cmg_is_identity_when_depth_is_zero_and_gate_off():
     rgb = torch.randn(2, 16, 8, 8)
     with torch.no_grad():
         out = m(rgb, torch.zeros(2, 16, 8, 8))
-    # depth_proj(0) 은 BN 의 bias 만 남으므로 rgb 와 정확히 같지는 않다.
-    # 형상과 유한성만 확인하고, 수치 동일성은 tools/replay.py 의 체크포인트
-    # 재생(verification/ 참고)이 검증한다.
+    # depth_proj(0) leaves BN's bias behind, so the output is not exactly rgb.
+    # Only the shape and finiteness are checked here; numerical equality is
+    # what the checkpoint replay in tools/replay.py verifies (see
+    # verification/).
     assert out.shape == rgb.shape and torch.isfinite(out).all()
 
 

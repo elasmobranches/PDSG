@@ -198,11 +198,12 @@ Why Pillar behaves that way is known, is documented in this project, and is
 not a property of this code: Pillar appears in only 14 of the 45 test images
 and the top five carry 55% of its ground-truth pixels, so one badly predicted
 image moves the aggregate by points. `verification/README.md` records an
-archived run sitting at z = −4.45 on Pillar with its mIoU at z = +0.11,
-traced to a single image. The 78.54 above is that same phenomenon, observed
-this time in a freshly trained model rather than an archived one — which is
-itself a small piece of evidence that the release reproduces the recipe's
-behaviour, tail included.
+archived run sitting at z = −4.45 on Pillar — against the other nine seeds,
+leaving itself out — with its mIoU at z = +0.11, traced to a single image. One
+of the same-seed repeats measured below reads 78.54 on Pillar with a normal
+mIoU, which is that same phenomenon observed in a freshly trained model rather
+than an archived one — itself a small piece of evidence that the release
+reproduces the recipe's behaviour, tail included.
 
 **Reported, not gated:** the difference against the same seed's recorded run,
 *and* the difference against the condition's ten-seed mean. Which reference

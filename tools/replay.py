@@ -1,19 +1,22 @@
-"""논문 체크포인트를 새 패키지 코드로 재생해 기록 수치와 대조한다.
+"""Replay the published checkpoints through this package's code and compare
+the result against the recorded metrics.
 
-가중치는 그대로 두고 모델 코드만 바꿔 같은 숫자가 나오면, 이식이 forward 를
-바꾸지 않았다는 뜻이다. 리팩터링(fusion.py 분리)을 검증하는 것이 주 목적이다.
+The weights are left alone and only the model code changes, so equal numbers
+mean the port did not change the forward pass. Verifying the refactor (pulling
+the fusion modules out into fusion.py) is what this exists for.
 
-사용법과 알려진 한계는 verification/README.md 를 먼저 읽을 것 — 특히 이
-스크립트가 **의도적으로 exit 1** 하는 두 이유(SegNeXt-T LightHamHead 의
-rand_init=True, 그리고 bl/resnet18 Pillar 가 소수점 2자리 반올림 경계인
-79.995 에 걸쳐 있는 것).
+**Read verification/README.md before reading this file** -- for how to run it
+and for what it cannot do, and in particular for the two reasons it exits 1
+**on purpose**: SegNeXt-T's LightHamHead runs with `rand_init=True`, and
+`bl/resnet18`'s Pillar sits on the two-decimal rounding boundary at 79.995.
 
-`--all` 은 WORK 의 9개 arm × 4 백본 = 36행 전부를 재생한다. 인자 없이 돌리면
-ablation 없는 4개 method 만 (16행) 돈다.
+`--all` replays every row of WORK -- nine arms x four backbones, 36 rows. With
+no arguments it replays only the four methods without ablations, 16 rows.
 
-체크포인트는 seed 37 에서 **학습**된 것을 읽지만, 비교는 기록된 평가가 실제로
-돌았던 seed 로 한다 (RECORDED_EVAL_SEED). 두 값이 다른 이유는 그 상수의
-주석에 있다 — 원본 sweep 이 평가 프로세스에 seed 를 넘기지 않았다.
+The checkpoints it loads were **trained** at seed 37, but the comparison runs
+at the seed the recorded evaluations actually ran at (RECORDED_EVAL_SEED).
+That constant's own comment explains why the two differ: the original sweep
+never passed a seed to its evaluation processes.
 """
 import argparse
 import csv
@@ -75,7 +78,7 @@ WORK = {
 # the quick check; `--all` replays every WORK entry -- all nine arms on all four
 # backbones, 36 rows -- and is what verification/replay.csv is generated with.
 IMPLEMENTED_METHODS = ('bl', 'ef', 'sd', 'hd')
-EXT_BACKBONES = ('segnext_t', 'convnext_atto')      # 확장 sweep 백본
+EXT_BACKBONES = ('segnext_t', 'convnext_atto')      # backbones of the extended sweep
 BACKBONES = ('resnet18', 'mit_b0', 'segnext_t', 'convnext_atto')
 
 # The seed the replayed checkpoints were *trained* at. It selects which run
@@ -129,10 +132,11 @@ def _use_original_val_test_layout(dataloader_cfg):
     — correct for the release's own unified data layout, which normalises
     away the paper's inconsistent depth_suffix/mask-folder naming
     on the assumption that a properly migrated copy carries the same content
-    under the new names. /data/real_dataset_v12_plus is not that migrated
-    copy — it's the original, un-migrated paper dataset, val/test depth
-    files are suffixed '_depth.npy' (only train is '.npy'), and val/test
-    labels live in 'masks_gray'/'*_mask_gray.png' rather than 'masks'/'*.png'.
+    under the new names. The dataset copy the recorded metrics were computed
+    against is not that migrated copy — it's the original, un-migrated paper
+    dataset: val/test depth files are suffixed '_depth.npy' (only train is
+    '.npy'), and val/test labels live in 'masks_gray'/'*_mask_gray.png' rather
+    than 'masks'/'*.png'.
 
     The mask-folder swap isn't cosmetic: comparing all 45 test images'
     masks/*.png against masks_gray/*_mask_gray.png byte-for-byte found one
@@ -215,10 +219,23 @@ def replay(data_root, src, method, backbone, ablation, seed=RUN_SEED,
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
-    ap.add_argument('--data', default='/data/real_dataset_v12_plus')
-    ap.add_argument('--src', default='/data',
+    ap.add_argument('--data', required=True, metavar='ROOT',
+                    help='root of the dataset copy the recorded metrics were '
+                         'computed against. Note this is NOT the layout '
+                         'docs/DATA_FORMAT.md describes: the recorded runs '
+                         'read an un-migrated copy whose val/test depth files '
+                         "carry a '_depth' infix and whose val/test labels "
+                         "live under 'masks_gray'. This script reproduces "
+                         'those paths itself -- see '
+                         '_use_original_val_test_layout.')
+    ap.add_argument('--src', required=True, metavar='ROOT',
                     help='root holding the recorded runs\' work_dirs and '
-                         'their results_v8.csv. The checkpoints found under '
+                         'their results_v8.csv. Required for the same reason '
+                         'as --data: it locates both the checkpoints to '
+                         'replay and the metrics to compare them against, so '
+                         'a wrong value scores the wrong weights against the '
+                         'wrong reference, and any default would name one '
+                         "machine's filesystem. The checkpoints found under "
                          'it are loaded with the pickle enabled (see '
                          'chamnet.checkpoint), so point it only at '
                          'checkpoints you trust.')
@@ -296,5 +313,5 @@ if __name__ == '__main__':
     bad = [r for r in rows
            if abs(r['replay_mIoU'] - r['recorded_mIoU']) > 1e-3
            or abs(r['replay_pillar'] - r['recorded_pillar']) > 1e-3]
-    print(f'{len(rows) - len(bad)}/{len(rows)} 일치')
+    print(f'{len(rows) - len(bad)}/{len(rows)} rows match the recorded metrics')
     raise SystemExit(1 if bad else 0)

@@ -1,0 +1,31 @@
+ChamNet — RGB-D fusion for greenhouse semantic segmentation
+Copyright 2026 DongSeok Shin
+
+This product includes software developed at OpenMMLab
+(https://github.com/open-mmlab), specifically MMSegmentation and MMCV, both
+licensed under the Apache License, Version 2.0.
+
+This package is built on top of an unmodified installation of
+`mmsegmentation` 1.2.2 and `mmcv` 2.1.0 rather than forking either, but parts
+of it derive from OpenMMLab source:
+
+* `chamnet/models/data_preprocessor.py` is a modified copy of
+  MMSegmentation's `mmseg/models/data_preprocessor.py`. It retains that file's
+  copyright notice. The modification is described in the file's own docstring
+  and in README.md: upstream skips its BGR-to-RGB channel conversion for any
+  input with more than three channels, and this copy does not.
+
+* `chamnet/datasets/dataset.py` retains MMSegmentation's copyright notice and
+  subclasses its `BaseSegDataset`.
+
+* `chamnet/metrics.py` subclasses MMSegmentation's `IoUMetric`, adding keys to
+  its output without changing any value it computes.
+
+* The backbones under `chamnet/models/backbones/` subclass MMSegmentation's
+  `ResNetV1c`, `MixVisionTransformer`, `MSCAN` and `TIMMBackbone`, and the
+  transforms under `chamnet/datasets/transforms/` subclass MMCV's
+  `BaseTransform`.
+
+The pretrained ImageNet weights the published runs initialise from are
+distributed by OpenMMLab and by the `timm` project under their own terms and
+are not redistributed here.

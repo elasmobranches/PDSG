@@ -5,7 +5,10 @@ from PIL import Image
 
 @pytest.fixture(scope='session')
 def synthetic_data(tmp_path_factory):
-    """스펙 DATA_FORMAT 대로 생성한 최소 데이터셋. 실데이터 없이 코드 경로를 검증한다."""
+    """A minimal dataset built in the layout docs/DATA_FORMAT.md documents.
+
+    It exercises the code paths without any real data.
+    """
     root = tmp_path_factory.mktemp('greenhouse')
     for split, n in [('train', 4), ('valid', 2), ('test', 2)]:
         for sub in ('images', 'masks', 'depth'):

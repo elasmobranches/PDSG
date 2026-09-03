@@ -1,4 +1,4 @@
-"""method × ablation 유효 조합. 이 표가 유일한 출처."""
+"""The valid method x ablation combinations. This table is the only source."""
 
 # Every valid combination, mapped to the name the original campaign gave it.
 #

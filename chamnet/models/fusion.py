@@ -1,13 +1,21 @@
-"""RGB-D 융합 모듈.
+"""The RGB-D fusion modules.
 
-원본에서는 CrossModalGating 이 dual_mit.py 에 정의되어 SD·HD 8개 백본이 MiT 파일에서
-게이트를 import 했고, BiGateGating 은 dual_resnet_bigate.py 와 dual_mit_bigate.py 에
-docstring 만 다른 채로 복제돼 있었다. 여기로 모아 한 벌만 둔다.
+In the original, CrossModalGating was defined in dual_mit.py, so all eight
+SD/HD backbones imported the gate from the MiT file, and BiGateGating was
+duplicated across dual_resnet_bigate.py and dual_mit_bigate.py with only the
+docstring differing. They are collected here so there is one copy of each.
 
 Extracted verbatim from mmsegmentation/mmseg/models/backbones/dual_mit.py
 (_DWBlock, DepthBranch, CrossModalGating) and dual_resnet_bigate.py
 (BiGateGating; the dual_mit_bigate.py copy was discarded, docstring-only diff).
 No class body was modified during the move.
+
+Which means the docstrings below are the originals too, and one of them cites a
+path (`_scratch/gate_vs_severity.py`, in CrossModalGating's note on measured
+gate behaviour) that belongs to the research repository and is not distributed
+here. Left as written rather than tidied: the point of these bodies is that
+they are byte-for-byte the ones the published checkpoints were trained with,
+and a docstring edit would give that up for cosmetics.
 """
 
 import math
