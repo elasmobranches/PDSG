@@ -430,16 +430,16 @@ def _fusion_parameters(model):
 
 @pytest.mark.parametrize('backbone', BACKBONES)
 def test_gate_designs_differ_by_exactly_one_channel_gate(backbone):
-    """NOGATE, CMG and BIGATE must be an arithmetic progression in fusion size.
+    """NOGATE, CMF and BIGATE must be an arithmetic progression in fusion size.
 
     The three arms are meant to be the same fusion block with zero, one and two
-    channel gates on it: NOGATE injects `rgb + d_proj`, CMG weights the depth
+    channel gates on it: NOGATE injects `rgb + d_proj`, CMF weights the depth
     term by a gate on depth, BIGATE adds a second gate on RGB. If that is what
-    they are, then `CMG - NOGATE` and `BIGATE - CMG` are both exactly one gate
+    they are, then `CMF - NOGATE` and `BIGATE - CMF` are both exactly one gate
     MLP and therefore equal — a property, not a definition, so it was measured
     before being asserted. It holds on all four backbones:
 
-        backbone       NOGATE     CMG     BIGATE    one gate
+        backbone       NOGATE     CMF     BIGATE    one gate
         resnet18       350,080  611,200   872,320    261,120
         mit_b0          97,280  169,472   241,664     72,192
         segnext_t       97,280  169,472   241,664     72,192
@@ -455,7 +455,7 @@ def test_gate_designs_differ_by_exactly_one_channel_gate(backbone):
     backbone class that accepts the argument and never passes it on. Two of the
     four HD classes (MSCAN, ConvNeXt) genuinely lacked that plumbing until this
     release; with the config key emitted and ignored, NOGATE would build a full
-    CMG, `test_hd_nogate_matches_paper` would still pass, and the arm would be
+    CMF, `test_hd_nogate_matches_paper` would still pass, and the arm would be
     comparing HD against itself.
     """
     counts, dims = {}, None
@@ -505,7 +505,7 @@ def test_hd_nogate_builds_no_gate_and_injects_depth_unweighted(backbone):
 def test_hd_bigate_gates_the_rgb_stream_as_well_as_the_depth_stream(backbone):
     """BIGATE's whole content is that the RGB term is gated too.
 
-    CMG is `rgb + d_proj*g(depth)`: the RGB path is untouched, which is the
+    CMF is `rgb + d_proj*g(depth)`: the RGB path is untouched, which is the
     asymmetry the robustness argument rests on. BIGATE is
     `rgb*g(rgb) + d_proj*g(depth)`. Swapping the class without that second gate
     being wired into the forward pass would leave a module that has the extra

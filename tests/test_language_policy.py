@@ -41,7 +41,7 @@ PORTED = {
     'chamnet/models/backbones/mit.py',              # the four MiT-B0 classes
     'chamnet/models/backbones/mscan.py',            # the four MSCAN classes
     'chamnet/models/backbones/resnet.py',           # the four ResNetV1c-18 classes
-    'chamnet/models/fusion.py',                     # CrossModalGating's own comment
+    'chamnet/models/fusion.py',                     # CrossModalFusion's own comment
 }
 
 #: Not source: the paper's own merged configs, committed as evidence. Nothing

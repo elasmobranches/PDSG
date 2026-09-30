@@ -1,10 +1,10 @@
 """The shared fusion modules. Moving them out of the original must not change a number."""
 import torch
-from chamnet.models.fusion import BiGateGating, CrossModalGating, DepthBranch
+from chamnet.models.fusion import BiGateGating, CrossModalFusion, DepthBranch
 
 
 def test_cmg_is_identity_when_depth_is_zero_and_gate_off():
-    m = CrossModalGating(16, use_gate=False).eval()
+    m = CrossModalFusion(16, use_gate=False).eval()
     rgb = torch.randn(2, 16, 8, 8)
     with torch.no_grad():
         out = m(rgb, torch.zeros(2, 16, 8, 8))
@@ -16,7 +16,7 @@ def test_cmg_is_identity_when_depth_is_zero_and_gate_off():
 
 
 def test_bigate_has_two_gates_and_cmg_has_one():
-    cmg = CrossModalGating(64)
+    cmg = CrossModalFusion(64)
     bg = BiGateGating(64)
     cmg_gates = [n for n, _ in cmg.named_modules() if n.endswith('gate')]
     bg_gates = [n for n, _ in bg.named_modules() if n in ('gate_rgb', 'gate_d')]

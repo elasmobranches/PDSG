@@ -65,7 +65,7 @@ def test_every_combination_builds_and_backprops(method, backbone, ablation,
     A forward pass is also the only check on the two streams' stage
     resolutions lining up: SD's `depth_stage_strides`, HD's second full
     backbone, and every ablation's inherited version of both. Get any of them
-    wrong and CrossModalGating's `rgb + d_proj * gate` raises a shape mismatch
+    wrong and CrossModalFusion's `rgb + d_proj * gate` raises a shape mismatch
     here. The fixture-equivalence tests compare dicts and cannot see it.
     """
     cfg = build_config(method=method, backbone=backbone, ablation=ablation,

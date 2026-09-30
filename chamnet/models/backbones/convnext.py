@@ -1,19 +1,19 @@
 """Serial-fusion dual-encoder backbone for ConvNeXt-Atto.
 
 DualConvNeXtAttoSerial (Dual): RGB ConvNeXt-Atto + lightweight DepthBranch,
-serial CMG.
+serial CMF.
 
 Architecture
 ------------
   RGB (3ch) ──▶ stem
                   │
-              [stage_0] ──▶ CrossModalGating[0](rgb, depth[0]) ──▶ feat_0
+              [stage_0] ──▶ CrossModalFusion[0](rgb, depth[0]) ──▶ feat_0
                   │
-              [stage_1] ──▶ CrossModalGating[1](rgb, depth[1]) ──▶ feat_1
+              [stage_1] ──▶ CrossModalFusion[1](rgb, depth[1]) ──▶ feat_1
                   │
-              [stage_2] ──▶ CrossModalGating[2](rgb, depth[2]) ──▶ feat_2
+              [stage_2] ──▶ CrossModalFusion[2](rgb, depth[2]) ──▶ feat_2
                   │
-              [stage_3] ──▶ CrossModalGating[3](rgb, depth[3]) ──▶ feat_3
+              [stage_3] ──▶ CrossModalFusion[3](rgb, depth[3]) ──▶ feat_3
                                                                         │
   Depth(1ch) ──▶ DepthBranch ──▶ [d0, d1, d2, d3]              UPerHead
 
@@ -27,13 +27,13 @@ Stage dims (ConvNeXt-Atto): [40, 80, 160, 320]
 파라미터:
   ConvNeXt-Atto (stem+stages)  ~3.7M  (timm ImageNet pretrained)
   DepthBranch                  ~0.4M  (random init)
-  CrossModalGating ×4          ~0.3M  (random init)
+  CrossModalFusion ×4          ~0.3M  (random init)
   ─────────────────────────────────────
   Total backbone               ~4.4M
 
 Ported verbatim from
 mmsegmentation/mmseg/models/backbones/dual_convnext_serial.py — only the
-imports changed: DepthBranch and CrossModalGating now come from
+imports changed: DepthBranch and CrossModalFusion now come from
 chamnet.models.fusion. Its HD (Dual+) sibling from the same source file,
 DualConvNeXtAttoPlusSerial, is ported below it. No class body was modified
 during the move.
@@ -51,7 +51,7 @@ from mmengine.model import BaseModule
 
 from mmseg.registry import MODELS
 
-from chamnet.models.fusion import BiGateGating, CrossModalGating, DepthBranch
+from chamnet.models.fusion import BiGateGating, CrossModalFusion, DepthBranch
 
 
 @MODELS.register_module()
@@ -59,11 +59,11 @@ class DualConvNeXtAttoSerial(BaseModule):
     """Serial depth-injection dual-encoder backbone.
 
     Depth features are injected into the RGB backbone at every stage via
-    CrossModalGating, so each stage's depth-modulated output feeds directly
+    CrossModalFusion, so each stage's depth-modulated output feeds directly
     into the next stage as input.
 
     Args:
-        fusion_reduction (int): Channel reduction ratio in CrossModalGating.
+        fusion_reduction (int): Channel reduction ratio in CrossModalFusion.
             Default: 4.
 
     Usage in config::
@@ -101,15 +101,15 @@ class DualConvNeXtAttoSerial(BaseModule):
         # ── Depth stream: lightweight DW-sep CNN ────────────────────────────
         self.depth_branch = DepthBranch(embed_dims=self.STAGE_DIMS)
 
-        # ── Per-stage CrossModalGating ───────────────────────────────────────
+        # ── Per-stage CrossModalFusion ───────────────────────────────────────
         self.fusions = nn.ModuleList([
-            CrossModalGating(dim, reduction=fusion_reduction)
+            CrossModalFusion(dim, reduction=fusion_reduction)
             for dim in self.STAGE_DIMS
         ])
 
         print_log(
             '[DualConvNeXtAttoSerial] RGB ConvNeXt-Atto: timm pretrained (serial stage loop). '
-            'DepthBranch and CrossModalGating: random init. '
+            'DepthBranch and CrossModalFusion: random init. '
             f'Stage dims: {self.STAGE_DIMS}',
             logger='current')
 
@@ -123,7 +123,7 @@ class DualConvNeXtAttoSerial(BaseModule):
             [(B,40,H/4,W/4), (B,80,H/8,W/8), (B,160,H/16,W/16), (B,320,H/32,W/32)]
 
         Flow:
-            rgb  → stem → stage_0 → CMG[0] → stage_1 → CMG[1] → ...
+            rgb  → stem → stage_0 → CMF[0] → stage_1 → CMF[1] → ...
                                 ↑               ↑
             depth → DepthBranch → [d0, d1, d2, d3]
         """
@@ -149,7 +149,7 @@ class DualConvNeXtAttoSerial(BaseModule):
 #
 # Ported verbatim from the same source file as DualConvNeXtAttoSerial above,
 # mmsegmentation/mmseg/models/backbones/dual_convnext_serial.py — only the
-# imports changed (CrossModalGating from chamnet.models.fusion). No class body
+# imports changed (CrossModalFusion from chamnet.models.fusion). No class body
 # was modified during the move.
 # ---------------------------------------------------------------------------
 
@@ -160,7 +160,7 @@ class DualConvNeXtAttoPlusSerial(BaseModule):
 
     RGB stream:   ConvNeXt-Atto (timm pretrained, 3ch) — stage-by-stage serial loop
     Depth stream: ConvNeXt-Atto (random init, 1ch)     — full forward → [d0,d1,d2,d3]
-    Fusion:       CrossModalGating at every stage (serial injection)
+    Fusion:       CrossModalFusion at every stage (serial injection)
 
     DualConvNeXtAttoSerial 대비 차이:
       - Dual  (Serial):      DepthBranch (~0.4M DW-sep)
@@ -169,7 +169,7 @@ class DualConvNeXtAttoPlusSerial(BaseModule):
     파라미터:
       RGB ConvNeXt-Atto   ~3.7M  (timm pretrained)
       Depth ConvNeXt-Atto ~3.7M  (random init, 1ch stem)
-      CrossModalGating ×4 ~0.3M  (random init)
+      CrossModalFusion ×4 ~0.3M  (random init)
       ─────────────────────────────────────
       Total backbone      ~7.7M
     """
@@ -218,9 +218,9 @@ class DualConvNeXtAttoPlusSerial(BaseModule):
                     '[DualConvNeXtAttoPlusSerial] depth_pretrained=True but the '
                     'depth stem is all zeros; the pretrained load failed.')
 
-        # ── Per-stage CrossModalGating ───────────────────────────────────────
+        # ── Per-stage CrossModalFusion ───────────────────────────────────────
         self.fusions = nn.ModuleList([
-            CrossModalGating(dim, reduction=fusion_reduction,
+            CrossModalFusion(dim, reduction=fusion_reduction,
                              use_gate=fusion_use_gate)
             for dim in self.STAGE_DIMS
         ])
@@ -239,7 +239,7 @@ class DualConvNeXtAttoPlusSerial(BaseModule):
         # Depth: full ConvNeXt-Atto forward → 4 scale features
         depth_feats = self.depth_backbone(depth)  # [d0, d1, d2, d3]
 
-        # RGB: stem → stage_i → CMG[i] → stage_i+1 → ...
+        # RGB: stem → stage_i → CMF[i] → stage_i+1 → ...
         feat = self.stem(rgb)
         outs = []
         for i, stage in enumerate(self.rgb_stages):
@@ -266,7 +266,7 @@ class DualConvNeXtAttoPlusSerial(BaseModule):
 
 @MODELS.register_module()
 class DualConvNeXtAttoPlusBiGate(DualConvNeXtAttoPlusSerial):
-    """Replaces CMG fusion with bidirectional multiplicative channel gating."""
+    """Replaces CMF fusion with bidirectional multiplicative channel gating."""
 
     def __init__(self, fusion_reduction: int = 4, **kwargs):
         super().__init__(fusion_reduction=fusion_reduction, **kwargs)

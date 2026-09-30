@@ -99,7 +99,7 @@ HD_TYPE = {
 # tests/fixtures/paper/hd-bigate_*.merged.py and hd-rgb_*.merged.py, whose
 # backbone dicts are HD's with nothing but `type` changed.
 #
-# HD_BIGATE_TYPE — CMG's additive, depth-only gate replaced by a
+# HD_BIGATE_TYPE — CMF's additive, depth-only gate replaced by a
 #   bidirectional multiplicative one (rgb*g(rgb) + d_proj*g(depth)). Same
 #   dual-encoder structure, same depth init, same forward flow, so the
 #   comparison isolates the fusion mechanism.

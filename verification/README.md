@@ -151,12 +151,12 @@ This is the end-to-end check on the three mechanisms these arms rest on, none
 of which changes an output shape or a parameter count in a way a smoke test
 could catch:
 
-- `nogate` is `fusion_use_gate=False` reaching `CrossModalGating`. Two of the
+- `nogate` is `fusion_use_gate=False` reaching `CrossModalFusion`. Two of the
   four HD backbone classes did not forward that argument at all before this
   package; a version that accepted and ignored it would build a fully gated
   HD and land on HD's numbers, not on these.
 - `bigate` is a different fusion module in the same dual-encoder skeleton. Its
-  checkpoint has `gate_rgb`/`gate_d` tensors that CMG has no slot for, so a
+  checkpoint has `gate_rgb`/`gate_d` tensors that CMF has no slot for, so a
   wrong class would not even load.
 - `rgb` puts the RGB image into the depth-slot encoder, which is rebuilt to
   take three channels and initialised from the RGB checkpoint *unadapted* —

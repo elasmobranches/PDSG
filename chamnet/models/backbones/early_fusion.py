@@ -2,7 +2,7 @@
 
 Where the dual-encoder backbones (chamnet/models/backbones/{resnet,mit,mscan,
 convnext}.py) run depth through a second encoder and fuse the two streams with
-CrossModalGating, early fusion does the cheapest possible thing instead: it
+CrossModalFusion, early fusion does the cheapest possible thing instead: it
 widens the backbone's very first convolution from 3 input channels to 4 and
 feeds it the RGB-D tensor directly. Nothing else about the architecture
 changes, so the whole added capacity is one extra input plane of stem filter

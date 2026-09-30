@@ -106,7 +106,7 @@ is `chamnet/recipes/paper.yaml`.
 
 On the command line those four are lowercase — `--method hd`.
 
-**SD** and **HD** fuse through `CrossModalGating`. The depth feature is projected
+**SD** and **HD** fuse through `CrossModalFusion`. The depth feature is projected
 1×1 and scaled by a per-channel sigmoid gate computed from its pooled context.
 The result is *added* to the RGB feature. Nothing flows the other way.
 
@@ -121,7 +121,7 @@ Each removes one thing and leaves the rest, so a difference can be attributed.
 | arm | what it removes | what a difference tells you |
 |---|---|---|
 | **HD** + `nogate` | The gate. The depth projection is added at full strength. | Whether the *gating* does anything, as opposed to the extra depth features. |
-| **HD** + `bigate` | `CrossModalGating`, replaced by a bidirectional multiplicative gate in the same skeleton. | Whether this gate design matters, or gating in general. |
+| **HD** + `bigate` | `CrossModalFusion`, replaced by a bidirectional multiplicative gate in the same skeleton. | Whether this gate design matters, or gating in general. |
 | **HD** + `rgb` | The depth. The depth-slot encoder is rebuilt for three channels and fed the RGB image. | How much of **HD**'s gain is depth, and how much is a second encoder's capacity. |
 | **HD** + `shuffled` | Depth's spatial arrangement. Pixels are permuted per sample, in train, validation and test alike. | Whether depth contributes geometry, or only its per-image statistics. |
 | **EF** + `shuffled` | The same, on early fusion. | The same question, on the arm whose only depth machinery is one wider convolution. |
@@ -164,7 +164,7 @@ chamnet/
   config/                    builder, per-backbone facts, the combination table, recipe schema
   recipes/paper.yaml         the published recipe. quick.yaml is a fast stand-in.
   models/
-    fusion.py                CrossModalGating, BiGateGating, the depth branch
+    fusion.py                CrossModalFusion, BiGateGating, the depth branch
     backbones/               sd, hd and their controls, per backbone family; early_fusion.py
     depth_pretrain.py        loading an RGB checkpoint into a depth encoder
     data_preprocessor.py     a corrected copy of upstream's; see its docstring

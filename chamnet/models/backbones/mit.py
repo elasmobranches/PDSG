@@ -4,11 +4,11 @@ Architecture overview
 ---------------------
                    ┌─────────────────────────────────────────┐
   RGB (3ch)  ──▶  │  MiT-B0 (pretrained, 4 stages)          │ ──▶ fused features ──▶ SegformerHead
-                   │    stage i ──▶ CrossModalGating[i] ──▶  │
+                   │    stage i ──▶ CrossModalFusion[i] ──▶  │
   Depth (1ch) ──▶ │  DepthBranch (4-stage DW-sep CNN)        │
                    └─────────────────────────────────────────┘
 
-CrossModalGating (per stage):
+CrossModalFusion (per stage):
   1. [GAP(depth) ; GMP(depth)] → FC → Sigmoid → gate w  (B,C,1,1)
        GAP: scene-level depth stats (near/far zones)
        GMP: edge/boundary stats (high-gradient regions)
@@ -28,12 +28,12 @@ Design choices
 Parameter count (B0 config):
   MiT-B0            ~3.72 M
   DepthBranch        ~0.20 M
-  CrossModalGating   ~0.15 M
+  CrossModalFusion   ~0.15 M
   ──────────────────────────
   Total              ~4.07 M   (+9% over RGB baseline)
 
 Ported verbatim from mmsegmentation/mmseg/models/backbones/dual_mit.py —
-only the imports changed: DepthBranch and CrossModalGating (originally
+only the imports changed: DepthBranch and CrossModalFusion (originally
 defined in that file) now come from chamnet.models.fusion (this package's
 single home for them — dual_mit.py was their one and only defining module
 upstream, and SD/HD's other backbones already imported them from there
@@ -57,7 +57,7 @@ from mmseg.registry import MODELS
 from mmseg.models.backbones.mit import MixVisionTransformer
 from mmseg.models.utils import nlc_to_nchw
 
-from chamnet.models.fusion import BiGateGating, CrossModalGating, DepthBranch
+from chamnet.models.fusion import BiGateGating, CrossModalFusion, DepthBranch
 from chamnet.models.depth_pretrain import load_rgb_into_depth_encoder
 
 
@@ -72,7 +72,7 @@ class DualMiTB0(MixVisionTransformer):
     Input tensor: (B, 4, H, W)  —  channels 0:3 = RGB,  channel 3 = depth.
 
     The RGB stream runs through the standard MiT-B0 transformer stages.
-    After each stage, cross-modal gating injects depth-derived cues as a
+    After each stage, cross-modal fusion injects depth-derived cues as a
     residual, enriching the RGB features without modifying pretrained weights.
 
     The depth branch is a tiny DW-sep CNN (~0.20 M params) trained from
@@ -109,7 +109,7 @@ class DualMiTB0(MixVisionTransformer):
 
         self.depth_branch = DepthBranch(embed_dims=stage_dims)
         self.fusions = nn.ModuleList([
-            CrossModalGating(dim, reduction=fusion_reduction)
+            CrossModalFusion(dim, reduction=fusion_reduction)
             for dim in stage_dims
         ])
 
@@ -126,7 +126,7 @@ class DualMiTB0(MixVisionTransformer):
             load_state_dict(self, state_dict, strict=False, logger='current')
             print_log(
                 '[DualMiTB0] RGB encoder (MiT-B0) loaded from pretrained. '
-                'DepthBranch and CrossModalGating modules: random init.',
+                'DepthBranch and CrossModalFusion modules: random init.',
                 logger='current')
         else:
             super().init_weights()
@@ -157,7 +157,7 @@ class DualMiTB0(MixVisionTransformer):
             feat = layer[2](feat)
             feat = nlc_to_nchw(feat, hw_shape)
 
-            # 4. Depth-guided cross-modal gating (residual)
+            # 4. Depth-guided cross-modal fusion (residual)
             feat = self.fusions[i](feat, depth_feats[i])
 
             if i in self.out_indices:
@@ -172,7 +172,7 @@ class DualMiTB0(MixVisionTransformer):
 #
 # Ported verbatim from
 # mmsegmentation/mmseg/models/backbones/dual_mit_late.py — only the imports
-# changed (CrossModalGating from chamnet.models.fusion,
+# changed (CrossModalFusion from chamnet.models.fusion,
 # load_rgb_into_depth_encoder from chamnet.models.depth_pretrain, and mmseg's
 # own MixVisionTransformer/nlc_to_nchw). Of that file's other two classes,
 # DualMiTB0LateFusionRGB is ported in the control-arm section at the bottom of
@@ -186,15 +186,15 @@ class DualMiTB0LateFusion(MixVisionTransformer):
     """Full dual-encoder MiT-B0 backbone with Serial Fusion.
 
     Both RGB and Depth streams use the full MiT-B0 architecture.
-    After each RGB stage, CrossModalGating injects depth features as a
+    After each RGB stage, CrossModalFusion injects depth features as a
     residual; the gated output feeds directly into the next stage
     (stage-by-stage serial injection).
 
     DualMiTB0 대비 차이: depth 스트림을 경량 DepthBranch 대신 full MiT-B0로 처리.
-    주입 메커니즘(serial CrossModalGating)은 동일.
+    주입 메커니즘(serial CrossModalFusion)은 동일.
 
     Args:
-        fusion_reduction (int): Reduction ratio in CrossModalGating. Default: 4.
+        fusion_reduction (int): Reduction ratio in CrossModalFusion. Default: 4.
         **kwargs: All other kwargs forwarded to MixVisionTransformer (RGB backbone).
                   Must include embed_dims, num_heads, num_layers, etc.
     """
@@ -231,9 +231,9 @@ class DualMiTB0LateFusion(MixVisionTransformer):
             **depth_kwargs,
         )
 
-        # Serial CrossModalGating × 4 (use_gate=False면 단순 additive fusion)
+        # Serial CrossModalFusion × 4 (use_gate=False면 단순 additive fusion)
         self.fusions = nn.ModuleList([
-            CrossModalGating(dim, reduction=fusion_reduction,
+            CrossModalFusion(dim, reduction=fusion_reduction,
                              use_gate=fusion_use_gate,
                              gate_type=fusion_gate_type,
                              pool_mode=fusion_pool_mode,
@@ -340,7 +340,7 @@ class DualMiTB0LateFusion(MixVisionTransformer):
 
 @MODELS.register_module()
 class DualMiTB0BiGate(DualMiTB0LateFusion):
-    """HD-BiGate variant for MiT-B0: replaces CMG fusion with bidirectional gating.
+    """HD-BiGate variant for MiT-B0: replaces CMF fusion with bidirectional gating.
 
     Inherits the full RGB+Depth dual MiT-B0 structure from DualMiTB0LateFusion.
     Only the per-stage fusion modules are replaced, isolating the fusion mechanism.
@@ -361,7 +361,7 @@ class DualMiTB0BiGate(DualMiTB0LateFusion):
     """
 
     def __init__(self, fusion_reduction: int = 4, init_cfg=None, **kwargs):
-        # NOTE: parent uses fusion_use_gate; force True so CMG is constructed
+        # NOTE: parent uses fusion_use_gate; force True so CMF is constructed
         # then replaced. (We replace self.fusions below regardless.)
         kwargs.pop('fusion_use_gate', None)
         super().__init__(fusion_reduction=fusion_reduction,
@@ -369,7 +369,7 @@ class DualMiTB0BiGate(DualMiTB0LateFusion):
 
         stage_dims = tuple(self.embed_dims * h for h in self.num_heads)
 
-        # Replace CMG with bidirectional channel gating
+        # Replace CMF with bidirectional channel gating
         self.fusions = nn.ModuleList([
             BiGateGating(dim, reduction=fusion_reduction)
             for dim in stage_dims

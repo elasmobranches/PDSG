@@ -3,7 +3,7 @@
 Architecture overview
 ---------------------
   RGB (3ch)   ──▶  ResNetV1c-18 (pretrained, 4 stages)   ─┐
-                     stage i ──▶ CrossModalGating[i] ──▶    ├──▶ fused features ──▶ UPerHead
+                     stage i ──▶ CrossModalFusion[i] ──▶    ├──▶ fused features ──▶ UPerHead
   Depth (1ch) ──▶  DepthBranchResNet (4-stage DW-sep CNN) ─┘
 
 Channel/spatial dimensions (ResNet-18, dilations=(1,1,2,4), strides=(1,2,1,1)):
@@ -18,19 +18,19 @@ DepthBranchResNet matches these spatial resolutions:
   Stage 2: stride×1 → H/8   (same spatial as stage 1)
   Stage 3: stride×1 → H/8   (same spatial)
 
-CrossModalGating: identical to DualMiTB0 (reused from dual_mit.py)
+CrossModalFusion: identical to DualMiTB0 (reused from dual_mit.py)
   gate   = Sigmoid( FC( cat[GAP(d), GMP(d)] ) )   (B, C, 1, 1)
   output = rgb_feat + Conv1x1(depth_feat) * gate
 
 Parameter count (ResNet-18 config):
   ResNetV1c-18      ~11.2 M
   DepthBranchResNet  ~0.3 M
-  CrossModalGating   ~0.2 M
+  CrossModalFusion   ~0.2 M
   ─────────────────────────
   Total             ~11.7 M   (+4% over RGB baseline)
 
 Ported verbatim from mmsegmentation/mmseg/models/backbones/dual_resnet.py —
-only the imports changed: CrossModalGating and _DWBlock now come from
+only the imports changed: CrossModalFusion and _DWBlock now come from
 chamnet.models.fusion (this package's single home for them, moved there out
 of dual_mit.py), and
 ResNetV1c comes from mmseg's own backbones module instead of a sibling file
@@ -48,7 +48,7 @@ from mmengine.runner.checkpoint import _load_checkpoint, load_state_dict
 from mmseg.registry import MODELS
 from mmseg.models.backbones.resnet import ResNetV1c
 
-from chamnet.models.fusion import BiGateGating, CrossModalGating, _DWBlock
+from chamnet.models.fusion import BiGateGating, CrossModalFusion, _DWBlock
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ class DualResNetV1c18(ResNetV1c):
     Input tensor: (B, 4, H, W) — channels 0:3 = BGR, channel 3 = depth.
 
     The RGB stream runs through standard ResNetV1c-18 stages.
-    After each stage, CrossModalGating injects depth-derived cues as a
+    After each stage, CrossModalFusion injects depth-derived cues as a
     residual, enriching RGB features without modifying pretrained weights.
 
     The depth branch is a lightweight DW-sep CNN trained from scratch.
@@ -158,7 +158,7 @@ class DualResNetV1c18(ResNetV1c):
         self.depth_branch = DepthBranchResNet(
             stage_dims=dims, stage_strides=tuple(depth_stage_strides))
         self.fusions = nn.ModuleList([
-            CrossModalGating(dim, reduction=fusion_reduction)
+            CrossModalFusion(dim, reduction=fusion_reduction)
             for dim in dims
         ])
 
@@ -177,7 +177,7 @@ class DualResNetV1c18(ResNetV1c):
             load_state_dict(self, state_dict, strict=False, logger='current')
             print_log(
                 '[DualResNetV1c18] RGB encoder (ResNetV1c-18) loaded from pretrained. '
-                'DepthBranchResNet and CrossModalGating modules: random init.',
+                'DepthBranchResNet and CrossModalFusion modules: random init.',
                 logger='current')
         else:
             super().init_weights()
@@ -206,7 +206,7 @@ class DualResNetV1c18(ResNetV1c):
         for i, layer_name in enumerate(self.res_layers):
             res_layer = getattr(self, layer_name)
             rgb = res_layer(rgb)
-            # Depth-guided cross-modal gating (residual addition)
+            # Depth-guided cross-modal fusion (residual addition)
             rgb = self.fusions[i](rgb, depth_feats[i])
             if i in self.out_indices:
                 outs.append(rgb)
@@ -219,7 +219,7 @@ class DualResNetV1c18(ResNetV1c):
 #
 # Ported verbatim from
 # mmsegmentation/mmseg/models/backbones/dual_resnet_late.py — only the imports
-# changed (CrossModalGating from chamnet.models.fusion, ResNetV1c from mmseg's
+# changed (CrossModalFusion from chamnet.models.fusion, ResNetV1c from mmseg's
 # own backbones module). Of that file's other two classes,
 # DualResNetV1c18LateFusionRGB is ported in the control-arm section at the
 # bottom of this module and DualResNetV1c18BiCMG is not (no paper run used
@@ -240,7 +240,7 @@ class DualResNetV1c18LateFusion(ResNetV1c):
     """Full dual-encoder ResNet-18 backbone with Serial Fusion.
 
     Both RGB and Depth streams use the full ResNetV1c-18 architecture.
-    After each RGB ResLayer, CrossModalGating injects depth features as a
+    After each RGB ResLayer, CrossModalFusion injects depth features as a
     residual; the gated output feeds directly into the next layer
     (stage-by-stage serial injection).
 
@@ -302,9 +302,9 @@ class DualResNetV1c18LateFusion(ResNetV1c):
         depth_kwargs['out_indices'] = (0, 1, 2, 3)  # all stages
         self.depth_backbone = ResNetV1c(**depth_kwargs)
 
-        # Serial CrossModalGating × 4 (use_gate=False면 단순 additive fusion)
+        # Serial CrossModalFusion × 4 (use_gate=False면 단순 additive fusion)
         self.fusions = nn.ModuleList([
-            CrossModalGating(dim, reduction=fusion_reduction,
+            CrossModalFusion(dim, reduction=fusion_reduction,
                              use_gate=fusion_use_gate,
                              gate_type=fusion_gate_type,
                              pool_mode=fusion_pool_mode,
@@ -346,7 +346,7 @@ class DualResNetV1c18LateFusion(ResNetV1c):
             load_state_dict(self, state_dict, strict=False, logger='current')
             print_log(
                 '[DualResNetV1c18LateFusion] RGB ResNetV1c loaded from pretrained. '
-                'CrossModalGating: random init. Depth ResNetV1c: '
+                'CrossModalFusion: random init. Depth ResNetV1c: '
                 + ('see next line.' if self.depth_pretrained else 'random init.'),
                 logger='current')
 
@@ -476,7 +476,7 @@ class DualResNetV1c18LateFusion(ResNetV1c):
 
 @MODELS.register_module()
 class DualResNetV1c18BiGate(DualResNetV1c18LateFusion):
-    """HD-BiGate variant: replaces CMG fusion with bidirectional multiplicative gating.
+    """HD-BiGate variant: replaces CMF fusion with bidirectional multiplicative gating.
 
     Inherits the full RGB+Depth dual-encoder structure from
     DualResNetV1c18LateFusion. Only the per-stage fusion modules are replaced.

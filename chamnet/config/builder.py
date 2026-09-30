@@ -175,7 +175,7 @@ def _hd_stem(backbone: str, bl_stem: dict, pretrained, stem_channels: int,
         `depth_pretrained` at HD's value: the arm controls for capacity *and*
         for initialisation, so its depth-slot encoder has to start where HD's
         did.
-    ``'nogate'``  adds `fusion_use_gate=False`, which makes CrossModalGating
+    ``'nogate'``  adds `fusion_use_gate=False`, which makes CrossModalFusion
         skip building a gate at all and inject `rgb + d_proj` unweighted.
     ``'shuffled'``  changes no backbone key whatsoever -- it is a pipeline
         step (see `_pipelines`), and reaching this function it is

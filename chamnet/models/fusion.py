@@ -1,20 +1,29 @@
 """The RGB-D fusion modules.
 
-In the original, CrossModalGating was defined in dual_mit.py, so all eight
-SD/HD backbones imported the gate from the MiT file, and BiGateGating was
-duplicated across dual_resnet_bigate.py and dual_mit_bigate.py with only the
-docstring differing. They are collected here so there is one copy of each.
+In the original, this class was named `CrossModalGating` and defined in
+dual_mit.py, so all eight SD/HD backbones imported the gate from the MiT file,
+and BiGateGating was duplicated across dual_resnet_bigate.py and
+dual_mit_bigate.py with only the docstring differing. They are collected here
+so there is one copy of each.
 
 Extracted verbatim from mmsegmentation/mmseg/models/backbones/dual_mit.py
 (_DWBlock, DepthBranch, CrossModalGating) and dual_resnet_bigate.py
 (BiGateGating; the dual_mit_bigate.py copy was discarded, docstring-only diff).
 No class body was modified during the move.
 
+Renamed afterwards: `CrossModalGating` -> `CrossModalFusion`, and `CMG` ->
+`CMF` in prose, so the code carries the name the paper gives the block --
+Cross-Modal Fusion (CMF). That rename is the only edit these bodies have had
+since the port, and it is a pure identifier change: the class is never named in
+a config, and the parameter names a checkpoint stores come from the attributes
+(`fusions`, `gate`, `depth_proj`), which are untouched. The published
+checkpoints load unchanged.
+
 Which means the docstrings below are the originals too, and one of them cites a
-path (`_scratch/gate_vs_severity.py`, in CrossModalGating's note on measured
+path (`_scratch/gate_vs_severity.py`, in CrossModalFusion's note on measured
 gate behaviour) that belongs to the research repository and is not distributed
 here. Left as written rather than tidied: the point of these bodies is that
-they are byte-for-byte the ones the published checkpoints were trained with,
+they are the ones the published checkpoints were trained with,
 and a docstring edit would give that up for cosmetics.
 """
 
@@ -91,11 +100,11 @@ class DepthBranch(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Cross-Modal Gating
+# Cross-Modal Fusion
 # ---------------------------------------------------------------------------
 
-class CrossModalGating(nn.Module):
-    """Depth-guided channel gating for RGB feature enhancement.
+class CrossModalFusion(nn.Module):
+    """Cross-modal fusion (CMF): depth-guided channel gating into the RGB stream.
 
     Mechanism (CBAM-style dual pooling):
       f_avg  = GAP(depth_feat)                  shape: (B, C)   — global mean context
@@ -399,7 +408,7 @@ class CrossModalGating(nn.Module):
             return rgb + d_proj
         if self.fixed_gate is not None:
             # Fixed-strength residual ablation: projection and depth encoder
-            # remain learnable, but the CMG decision itself is disabled.
+            # remain learnable, but the CMF decision itself is disabled.
             return rgb + d_proj * self.fixed_gate
         if self.gate_type == 'agg':
             cat = torch.cat([rgb, d_proj], dim=1)                # (B, 2C, H, W)
@@ -474,7 +483,7 @@ class BiGateGating(nn.Module):
             nn.Sigmoid(),
         )
 
-        # Depth → RGB-channel projection (same form as CMG)
+        # Depth → RGB-channel projection (same form as CMF)
         self.depth_proj = nn.Sequential(
             nn.Conv2d(channels, channels, kernel_size=1, bias=False),
             nn.BatchNorm2d(channels),

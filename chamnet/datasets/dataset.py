@@ -5,6 +5,11 @@ Ported verbatim from the research repository's mmseg/datasets/chamoe.py, whose
 class name and METAINFO the published configs and every recorded metrics column
 refer to. The directory layout it requires is docs/DATA_FORMAT.md; the class
 indices below are the values a mask PNG must contain.
+
+The class names below are the dataset's own, and every recorded metrics column
+is keyed on them (`val_IoU_topdownfarm` and so on), so they are kept as
+recorded. The paper capitalises them and calls `topdownfarm` the Cultivation
+bed and `heatpipe` the Heat pipe; the other six read the same either way.
 """
 from mmseg.datasets import BaseSegDataset
 from mmseg.registry import DATASETS

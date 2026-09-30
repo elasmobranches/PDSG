@@ -3,7 +3,7 @@
 Architecture overview
 ---------------------
   RGB (3ch)   ──▶  MSCAN (pretrained, 4 stages)          ─┐
-                     stage i ──▶ CrossModalGating[i] ──▶    ├──▶ fused features ──▶ LightHamHead
+                     stage i ──▶ CrossModalFusion[i] ──▶    ├──▶ fused features ──▶ LightHamHead
   Depth (1ch) ──▶  DepthBranch (4-stage DW-sep CNN)       ─┘
 
 Channel/spatial dimensions (MSCAN-T, embed_dims=[32,64,160,256]):
@@ -13,10 +13,10 @@ Channel/spatial dimensions (MSCAN-T, embed_dims=[32,64,160,256]):
   Stage 3: OverlapPatchEmbed (stride=2)   → 256ch, H/32
 
 DepthBranch matches these resolutions using the same DW-sep pattern as DualMiTB0.
-CrossModalGating: identical to DualMiTB0 (reused from dual_mit.py).
+CrossModalFusion: identical to DualMiTB0 (reused from dual_mit.py).
 
 Ported verbatim from mmsegmentation/mmseg/models/backbones/dual_mscan.py —
-only the imports changed: DepthBranch and CrossModalGating now come from
+only the imports changed: DepthBranch and CrossModalFusion now come from
 chamnet.models.fusion (this package's single home for them), and MSCAN comes
 from
 mmseg's own backbones module instead of a sibling file in the same package.
@@ -34,18 +34,18 @@ from mmengine.runner.checkpoint import _load_checkpoint, load_state_dict
 from mmseg.registry import MODELS
 from mmseg.models.backbones.mscan import MSCAN, StemConv
 
-from chamnet.models.fusion import BiGateGating, CrossModalGating, DepthBranch
+from chamnet.models.fusion import BiGateGating, CrossModalFusion, DepthBranch
 from chamnet.models.depth_pretrain import load_rgb_into_depth_encoder
 
 
 @MODELS.register_module()
 class DualMSCAN(MSCAN):
-    """Dual-encoder MSCAN backbone: MSCAN (RGB) + DepthBranch + CrossModalGating.
+    """Dual-encoder MSCAN backbone: MSCAN (RGB) + DepthBranch + CrossModalFusion.
 
     Input tensor: (B, 4, H, W) — channels 0:3 = BGR, channel 3 = depth.
 
     The RGB stream runs through standard MSCAN stages.
-    After each stage output (NCHW), CrossModalGating injects depth-derived
+    After each stage output (NCHW), CrossModalFusion injects depth-derived
     cues as a residual, enriching RGB features without modifying pretrained weights.
 
     Usage in config::
@@ -73,7 +73,7 @@ class DualMSCAN(MSCAN):
         stage_dims = tuple(embed_dims)
         self.depth_branch = DepthBranch(embed_dims=stage_dims)
         self.fusions = nn.ModuleList([
-            CrossModalGating(dim, reduction=fusion_reduction)
+            CrossModalFusion(dim, reduction=fusion_reduction)
             for dim in stage_dims
         ])
 
@@ -90,7 +90,7 @@ class DualMSCAN(MSCAN):
             load_state_dict(self, state_dict, strict=False, logger='current')
             print_log(
                 '[DualMSCAN] RGB encoder (MSCAN) loaded from pretrained. '
-                'DepthBranch and CrossModalGating modules: random init.',
+                'DepthBranch and CrossModalFusion modules: random init.',
                 logger='current')
         else:
             super().init_weights()
@@ -123,7 +123,7 @@ class DualMSCAN(MSCAN):
             feat = norm(feat)                 # LayerNorm on NLC
             feat = feat.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()  # NCHW
 
-            # Depth-guided cross-modal gating (residual addition)
+            # Depth-guided cross-modal fusion (residual addition)
             feat = self.fusions[i](feat, depth_feats[i])
             outs.append(feat)
 
@@ -135,7 +135,7 @@ class DualMSCAN(MSCAN):
 #
 # Ported verbatim from
 # mmsegmentation/mmseg/models/backbones/dual_mscan_late.py — only the imports
-# changed (CrossModalGating from chamnet.models.fusion,
+# changed (CrossModalFusion from chamnet.models.fusion,
 # load_rgb_into_depth_encoder from chamnet.models.depth_pretrain, and mmseg's
 # own MSCAN/StemConv). No class body was modified during the move.
 # ---------------------------------------------------------------------------
@@ -146,12 +146,12 @@ class DualMSCANLateFusion(MSCAN):
     """Full dual-encoder MSCAN backbone with Serial Fusion.
 
     Both RGB and Depth streams use the full MSCAN architecture.
-    After each RGB stage, CrossModalGating injects depth features as a
+    After each RGB stage, CrossModalFusion injects depth features as a
     residual; the gated output feeds directly into the next stage
     (stage-by-stage serial injection).
 
     DualMSCAN 대비 차이: depth 스트림을 경량 DepthBranch 대신 full MSCAN(1ch)으로
-    처리. 주입 메커니즘(serial CrossModalGating)은 동일.
+    처리. 주입 메커니즘(serial CrossModalFusion)은 동일.
 
     Usage in config::
 
@@ -200,9 +200,9 @@ class DualMSCANLateFusion(MSCAN):
             act_cfg=act_cfg,
         )
 
-        # Serial CrossModalGating × 4
+        # Serial CrossModalFusion × 4
         self.fusions = nn.ModuleList([
-            CrossModalGating(dim, reduction=fusion_reduction,
+            CrossModalFusion(dim, reduction=fusion_reduction,
                              use_gate=fusion_use_gate)
             for dim in stage_dims
         ])
@@ -286,7 +286,7 @@ class DualMSCANLateFusion(MSCAN):
 
 @MODELS.register_module()
 class DualMSCANBiGate(DualMSCANLateFusion):
-    """Replaces CMG fusion with bidirectional multiplicative channel gating."""
+    """Replaces CMF fusion with bidirectional multiplicative channel gating."""
 
     def __init__(self, embed_dims=(32, 64, 160, 256), fusion_reduction=4,
                  **kwargs):
